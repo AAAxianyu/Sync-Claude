@@ -55,9 +55,12 @@ extension Engine {
                 if let data = try? readJSON(schedule),
                    let tasks = data["scheduledTasks"] as? [Any],
                    let skips = data["recordedSkips"] as? [String: Any] {
-                    let known = Set(data.keys).isSubset(of: ["scheduledTasks", "recordedSkips", "sundayAliasBoundaryStamped", "dayFieldsOrBoundaryStamped"])
+                    let known = Set(data.keys).isSubset(of: LocalSchedule.envelopeKeys)
                     emptySchedule = tasks.isEmpty && skips.isEmpty && known
-                    if !tasks.isEmpty { reason = reason ?? "有定时任务，请先在 Claude 中停用并移除" }
+                    if !tasks.isEmpty && (try? tasksPreservedOutside(owner)) != true { reason = reason ?? "定时任务尚未完整同步到当前账户；请先同步并重载" }
+                    for key in ["recordedPlaceSkips", "runRetries"] {
+                        if let rows = data[key], (rows as? [String: Any])?.isEmpty != true { reason = reason ?? "仍有调度跳过或重试状态，请先在 Claude 中处理"; emptySchedule = false }
+                    }
                     if !known { reason = reason ?? "定时任务文件含未识别字段，请先检查" }
                 } else {
                     emptySchedule = false

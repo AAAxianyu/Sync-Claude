@@ -167,6 +167,7 @@ struct SyncClaudeApp: App {
     func confirmRestart() { let work = pendingRestart; pendingRestart = nil; askToRestart = false; work?() }
     func cancelRestart() { pendingRestart = nil; askToRestart = false }
     func sync() { restarting("正在保存历史、同步记录并重载 Claude…") { try $0.sync(allowOpenSessions: $1) } }
+    func removeRuns(_ preview: ScheduledRunRemovalPreview) { run("正在移除已完成的任务运行历史…") { try $0.removeScheduledRuns(preview) } }
     func switchTo(_ profile: ProfileInfo) { restarting("正在切换到 \(profile.name)…") { try $0.switchProfile(id: profile.id, allowOpenSessions: $1) } }
     func saveAccount(_ name: String) {
         guard status?.canSaveOfficialAccount == true else { return }
@@ -233,6 +234,8 @@ struct MainView: View {
     @State private var showAddAccountConfirmation = false
     @State private var showRecordManager = false
     @State private var showDeletedSessions = false
+    @State private var showScheduledRuns = false
+    @State private var pendingRunRemoval: ScheduledRunRemovalPreview?
     @State private var pendingSessionPurge: SessionPurgePreview?
     @State private var pendingCleanup: [AccountRecordInfo] = []
     @State private var pendingRestore: String?
@@ -282,6 +285,7 @@ struct MainView: View {
                         Button("添加官方账号") { showAddAccountConfirmation = true }.disabled(!canWrite)
                     }.font(.caption)
                     Button("官方账户用量") { showUsage = true }.frame(maxWidth: .infinity)
+                    Button("定时任务运行历史…") { model.reviewingSessionPurge = true; showScheduledRuns = true }.frame(maxWidth: .infinity).disabled(model.busy || model.status?.pendingRecovery == true)
                     Button(updates.availableVersion.map { "发现新版本 \($0)" } ?? "版本与更新…") { updates.showDetails = true }
                         .font(.caption).frame(maxWidth: .infinity)
                 }.padding(16)
@@ -307,6 +311,12 @@ struct MainView: View {
         }
         .sheet(isPresented: $showGateway) { GatewayForm { name, url, models, auth, key, prefer1m in model.addGateway(name: name, endpoint: url, models: models, auth: auth, key: key, prefer1m: prefer1m) } }
         .sheet(isPresented: $showAccount) { AccountForm { model.saveAccount($0) } }
+        .sheet(isPresented: $showScheduledRuns, onDismiss: {
+            model.reviewingSessionPurge = false
+            if let preview = pendingRunRemoval { pendingRunRemoval = nil; model.removeRuns(preview) }
+        }) {
+            ScheduledRunManager(model: model) { preview in pendingRunRemoval = preview; showScheduledRuns = false }
+        }
         .sheet(item: $aliasProfile) { profile in ProfileAliasForm(model: model, profile: profile) }
         .sheet(isPresented: $showUsage) { UsageOverview(model: model) }
         .sheet(isPresented: $updates.showDetails) { UpdateOverview(model: updates) }
@@ -376,7 +386,7 @@ struct MainView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 5) {
                 Text("每次切换，都接着上次的工作").font(.system(size: 21, weight: .semibold))
-                Text("统一保留这台 Mac 上的 Code 项目与会话").foregroundStyle(.secondary).font(.subheadline)
+                Text("统一保留这台 Mac 上的 Code 会话与本机定时任务").foregroundStyle(.secondary).font(.subheadline)
             }
             Spacer()
             HStack(spacing: 5) { Circle().fill(model.status?.running == true ? Color.green : Color.gray).frame(width: 6, height: 6); Text(model.status?.running == true ? "Claude 运行中" : "Claude 未运行").font(.caption) }
@@ -431,7 +441,7 @@ struct MainView: View {
             }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "checkmark.shield").foregroundStyle(accent)
-                Text("切换前保存登录与记录，自动重开 Claude。有会话进程时先确认任务已完成；不会强制终止进程。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("切换时自动同步会话与本机定时任务，保留任务启用状态。新账户使用默认权限；有 Code 进程时先确认任务已完成，再正常重开 Claude。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.padding(22).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14)).overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 1))
     }
@@ -440,7 +450,7 @@ struct MainView: View {
             if model.status?.canSaveOfficialAccount == true {
                 Label("官方登录已识别，保存后即可切换", systemImage: "person.crop.circle.badge.checkmark").font(.headline)
                 Text("请先在 Claude 进入一次 Code，再保存当前账号并同步记录。").font(.subheadline).foregroundStyle(.secondary)
-                Button("保存当前账号") { showAccount = true }.buttonStyle(.borderedProminent).disabled(!canWrite)
+                Button("保存账号并同步") { showAccount = true }.buttonStyle(.borderedProminent).disabled(!canWrite)
             } else if model.status?.mode == "1p" {
                 Label("完成官方账号登录", systemImage: "person.crop.circle.badge.plus").font(.headline)
                 Text("在 Claude 中完成登录并进入 Code，返回这里刷新状态，然后保存当前账号。").font(.subheadline).foregroundStyle(.secondary)
@@ -487,6 +497,7 @@ struct MainView: View {
                             Image(systemName: "folder").foregroundStyle(accent).padding(10).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(session.title).font(.system(size: 13, weight: .medium)).lineLimit(2)
+                                if let task = session.scheduledTaskID { Label(task, systemImage: "clock.arrow.circlepath").font(.caption2).foregroundStyle(.secondary) }
                                 Text(session.project.replacingOccurrences(of: NSHomeDirectory(), with: "~")).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).help(session.project)
                             }
                             Spacer()

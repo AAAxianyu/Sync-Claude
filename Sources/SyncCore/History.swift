@@ -8,6 +8,7 @@ public struct SessionInfo: Codable, Identifiable {
     public let transcriptAvailable: Bool
     public let archived: Bool
     public let initializing: Bool
+    public let scheduledTaskID: String?
 }
 struct Owner: Hashable {
     let profile: String
@@ -176,7 +177,7 @@ final class History {
         return infos.values.sorted { $0.lastActivity > $1.lastActivity }
     }
     func info(_ d: [String: Any], _ ts: [String: URL]) -> SessionInfo {
-        SessionInfo(id: d["sessionId"] as? String ?? "", title: d["title"] as? String ?? "未命名会话", project: d["originCwd"] as? String ?? d["cwd"] as? String ?? "", lastActivity: (d["lastActivityAt"] as? NSNumber)?.doubleValue ?? 0, transcriptAvailable: ts[d["cliSessionId"] as? String ?? ""] != nil, archived: d["isArchived"] as? Bool ?? false, initializing: isInitializingCodeRecord(d))
+        SessionInfo(id: d["sessionId"] as? String ?? "", title: d["title"] as? String ?? "未命名会话", project: d["originCwd"] as? String ?? d["cwd"] as? String ?? "", lastActivity: (d["lastActivityAt"] as? NSNumber)?.doubleValue ?? 0, transcriptAvailable: ts[d["cliSessionId"] as? String ?? ""] != nil, archived: d["isArchived"] as? Bool ?? false, initializing: isInitializingCodeRecord(d), scheduledTaskID: d["scheduledTaskId"] as? String)
     }
     // Existing records are never overwritten. Cross-account copies reset permissions and connector state.
     func merge(into targets: [Owner], transaction: Transaction) throws -> Int {
@@ -184,17 +185,32 @@ final class History {
         let index = try readJSON(vault.appendingPathComponent("index.json"), optional: true)
         let ts = try transcripts()
         var added = 0
-        let allowed: Set<String> = ["sessionId", "cliSessionId", "cwd", "originCwd", "title", "titleSource", "createdAt", "lastActivityAt", "model", "effort", "isArchived", "completedTurns", "priorCliSessionIds"]
+        let linked = Dictionary(grouping: try records().filter { $0.value["scheduledTaskId"] is String }, by: \.id)
+        let allowed: Set<String> = ["sessionId", "cliSessionId", "cwd", "originCwd", "title", "titleSource", "createdAt", "lastActivityAt", "model", "effort", "isArchived", "completedTurns", "priorCliSessionIds", "scheduledTaskId"]
         for (id, entry) in index.sorted(by: { $0.key < $1.key }) {
             guard validSession(id), let e = entry as? [String: Any], let hash = e["hash"] as? String, hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw SyncError("历史索引损坏") }
             if deleted[id.lowercased()] != nil { continue }
             let bytes = try Data(contentsOf: vault.appendingPathComponent("records/\(id)/\(hash).json"))
-            guard sha(bytes) == hash, let original = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+            guard sha(bytes) == hash, var original = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
                   let cli = original["cliSessionId"] as? String, ts[cli] != nil else { continue }
+            let taskIDs = Set((linked[id] ?? []).filter { $0.value["cliSessionId"] as? String == cli }.compactMap { $0.value["scheduledTaskId"] as? String })
+            guard taskIDs.count <= 1 else { throw SyncError("会话 \(id) 的定时任务关联冲突，请先检查各账号记录。") }
+            if let task = taskIDs.first { original["scheduledTaskId"] = task }
             for owner in targets {
                 let target = owner.directory.appendingPathComponent(id + ".json")
                 let tombstone = owner.directory.appendingPathComponent("deleted_" + id.dropFirst(6))
-                if exists(target) || exists(tombstone) { continue }
+                if exists(tombstone) { continue }
+                if exists(target) {
+                    // Repair pre-task-sync imports without overwriting the target's title/settings.
+                    if let task = original["scheduledTaskId"] as? String, LocalSchedule.validID(task) {
+                        var existing = try readJSON(target)
+                        if existing["scheduledTaskId"] == nil && existing["cliSessionId"] as? String == cli {
+                            existing["scheduledTaskId"] = task
+                            try transaction.write(existing, to: target)
+                        }
+                    }
+                    continue
+                }
                 var copy = original.filter { allowed.contains($0.key) }
                 copy["permissionMode"] = "default"
                 copy["remoteControlAutoEligible"] = false

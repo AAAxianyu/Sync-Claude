@@ -108,6 +108,7 @@ final class Transaction {
     let folder: URL
     var journal: Journal
     var beforeWrite: (() throws -> Void)?
+    var taskImports = 0
     var pending: URL { root.appendingPathComponent("pending.json") }
     init(root: URL, operation: String) throws {
         self.root = root

@@ -127,6 +127,7 @@ public final class Engine {
             do {
                 _ = try history.ingest()
                 let added = try body(transaction)
+                if exists(scheduleLedger) { try applyTaskDeletions(transaction: transaction) }
                 let deleted = try history.synchronizeDeletions(transaction: transaction)
                 guard !process.running, process.workers == 0 else { throw SyncError("Claude 在操作期间重新启动，停止写入并准备恢复。") }
                 try transaction.commit()
@@ -136,7 +137,8 @@ public final class Engine {
                 }
                 let suffix = (launch || wasRunning) ? "Claude 已重新打开；登录及 API 可用性请在客户端确认。" : "将在下次切换配置时生效。"
                 let deletionSummary = deleted > 0 ? "已同步删除 \(deleted) 份其他账号中的会话记录。" : ""
-                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(deletionSummary)\(suffix)", added: added)
+                let taskSummary = transaction.taskImports > 0 ? "已同步 \(transaction.taskImports) 个本机定时任务，保留启用/暂停状态；新账户使用默认权限。" : ""
+                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(taskSummary)\(deletionSummary)\(suffix)", added: added)
             } catch {
                 if process.running {
                     throw SyncError("Claude 意外重新启动；已保留恢复日志。请退出 Claude 后点击“恢复未完成操作”。")
@@ -204,11 +206,15 @@ public final class Engine {
         if let account = try accountID(), try accounts().contains(where: { $0["account"] as? String == account }) {
             return Outcome(message: "当前账号已保存，切换离开时会自动更新登录快照；名称可通过“编辑别名”修改。", added: 0)
         }
-        return try mutate("保存账号", configuration: false, allowOpenSessions: allowOpenSessions) { tx in try snapshot(name: name, tx: tx, requireLogin: true); return 0 }
+        return try mutate("保存账号", configuration: false, allowOpenSessions: allowOpenSessions) { tx in
+            try snapshot(name: name, tx: tx, requireLogin: true)
+            return try mergeWork(from: syncTargets(), transaction: tx)
+        }
     }
     public func switchProfile(id: String, allowOpenSessions: Bool = false) throws -> Outcome {
         guard id == "official" || uuid(id) else { throw SyncError("配置 ID 无效") }
         return try mutate("切换配置", allowOpenSessions: allowOpenSessions) { tx in
+            let source = try syncTargets()
             if try mode() == "1p" { try snapshot(name: nil, tx: tx, requireLogin: false) }
             if id == "official" { try setMode("1p", tx) }
             else if try accounts().contains(where: { $0["id"] as? String == id }) { try restoreAccount(id, tx); try setMode("1p", tx) }
@@ -220,7 +226,7 @@ public final class Engine {
                 try tx.write(meta, to: library.appendingPathComponent("_meta.json"))
                 try setMode("3p", tx)
             }
-            return try history.merge(into: syncTargets(), transaction: tx)
+            return try mergeWork(from: source, transaction: tx)
         }
     }
     public func newLogin(allowOpenSessions: Bool = false) throws -> Outcome {
@@ -233,7 +239,7 @@ public final class Engine {
         }
     }
     public func sync(allowOpenSessions: Bool = false) throws -> Outcome {
-        try mutate("同步并重载", configuration: false, allowOpenSessions: allowOpenSessions) { tx in try history.merge(into: syncTargets(), transaction: tx) }
+        try mutate("同步并重载", configuration: false, allowOpenSessions: allowOpenSessions) { tx in try mergeWork(from: syncTargets(), transaction: tx) }
     }
     public func recover() throws -> Outcome {
         try locked(state) {
