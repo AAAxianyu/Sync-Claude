@@ -1,6 +1,6 @@
 # 本机定时任务随账户切换与运行历史清理
 
-日期：2026-11-02。状态：当前开发分支，尚未发布。
+日期：2026-11-02。对应版本：v0.1.5（build 7）。
 
 对应 [issue #1](https://github.com/Chiiz0/Sync-Claude/issues/1) 与 [issue #2](https://github.com/Chiiz0/Sync-Claude/issues/2)。任务同步属于原有切换、同步并重载和首次保存账号流程；无需先清理源账户目录。
 
@@ -47,6 +47,17 @@
 
 ## 尚未完成的真实验收
 
-本机当前两个原生任务登记均为空，本轮没有创建或运行真实定时任务。尚未完成两个真实官方账号的切换、自然到点执行、订阅模型权限、首次默认权限审批与通知投递验收；fixture 和源码检查不能替代这些结果。没有关闭 issues 或发布正式版本。
+本机当前两个原生任务登记均为空，本轮没有创建或运行真实定时任务。尚未完成两个真实官方账号的切换、自然到点执行、订阅模型权限、首次默认权限审批与通知投递验收；fixture 和源码检查不能替代这些结果。发行包验证列于下文，以上真实验收边界仍保留。
 
 本轮不扩展云端/Cowork/SSH/WSL/watcher/账户空间任务，也不迁移自定义 Claude 配置根目录。需要这些内容时提示具体不兼容原因，整次切换回滚。
+
+## v0.1.5 发行包验证
+
+- 版本 0.1.5，构建号 7；签名打包前再次运行两套适配配置，各 126 项测试通过。
+- Developer ID Application 签名，包含 Hardened Runtime 与安全时间戳。
+- Apple 公证 submission `513e0cf2-6ceb-4b7f-b187-a8d5e4db3ba2` 为 `Accepted`，公证日志无 issues。
+- 从公证提交 ZIP 解压到未启动目录，附加票据后生成最终分发 ZIP；最终解压产物通过严格签名、票据和 Gatekeeper 校验，架构为 arm64。
+- 分发包可执行文件与签名构建相同，解压产物的只读 `--status` 冒烟通过。未替换本机已安装应用。
+- 资产：`Sync-Claude-0.1.5-macos-arm64.zip`、`SHA256SUMS`。
+- ZIP SHA-256：`11e9e49d0b5690595410885c152055be042419f3eed49faff3dac88e1c0b8884`。
+- 本地发行证据位于 `.build/release-0.1.5`，不随源码公开；[Release](https://github.com/Chiiz0/Sync-Claude/releases/tag/v0.1.5) 说明保留真实账号验收边界。
