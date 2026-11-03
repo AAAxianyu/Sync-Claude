@@ -4,15 +4,13 @@
 
 采用 SwiftUI + Foundation + macOS Keychain，不需要 npm、Python 或本地后台服务。官方订阅用量通过 Anthropic 用量接口只读查询。
 
-**v0.1.5**：切换/同步时自动带入本机 Code 定时任务，并支持独立清理已完成运行历史。适配依据与验收边界见[任务同步验证记录](docs/validation-scheduled-tasks.md)。
-
-**待下次发布**：支持同一账号下的多个本地工作区。切换后由用户在 Claude 中选择个人或团队，本地 Code 记录与任务同步到该账号已存在的各工作区；“仅归档”更名为“立即备份记录”。验证范围见[多工作区验证记录](docs/validation-workspaces.md)。
+**v0.1.6**：支持同一账号下的多个本地工作区。切换后由用户在 Claude 中选择个人或团队，本地 Code 记录与任务同步到该账号已存在的各工作区；“仅归档”更名为“立即备份记录”。验证范围见[多工作区验证记录](docs/validation-workspaces.md)，定时任务适配依据见[任务同步验证记录](docs/validation-scheduled-tasks.md)。
 
 ## 下载与安装
 
-从 [最新 Release](https://github.com/Chiiz0/Sync-Claude/releases/latest) 下载 `Sync-Claude-0.1.5-macos-arm64.zip`，解压后将 **Sync Claude.app** 放到 `/Applications` 或 `~/Applications`，再打开使用。请先安装并打开一次 Claude Desktop。
+从 [最新 Release](https://github.com/Chiiz0/Sync-Claude/releases/latest) 下载 `Sync-Claude-0.1.6-macos-arm64.zip`，解压后将 **Sync Claude.app** 放到 `/Applications` 或 `~/Applications`，再打开使用。请先安装并打开一次 Claude Desktop。
 
-v0.1.5 在切换账户、同步并重载及首次保存官方账号时自动同步本机定时任务，保留任务启用状态和运行历史关联；新增独立运行历史清理入口。继续支持 v0.1.4 的窗口恢复、Claude Desktop 4.4212.0、跨账号会话删除同步及范围预览与永久清理。升级前退出 Sync Claude，将新应用替换到原安装位置，再重新打开，即可保留本机配置、账号快照及归档。安装更新不会自动执行永久清理。
+v0.1.6 在切换账户、同步并重载及首次保存官方账号时，将记录和本机定时任务同步到该账号已有的个人、团队工作区。继续支持 v0.1.5 的定时任务运行历史清理、窗口恢复、Claude Desktop 4.4212.0、跨账号会话删除同步及范围预览与永久清理。升级前退出 Sync Claude，将新应用替换到原安装位置，再重新打开，即可保留本机配置、账号快照及归档。安装更新不会自动执行永久清理。
 
 - 系统要求：macOS 13+；预编译包仅支持 Apple Silicon。
 - Claude 原生数据写入适配：**4.29.0 / 4.4212.0**；未知版本保持只读归档。
@@ -47,7 +45,7 @@ v0.1.5 在切换账户、同步并重载及首次保存官方账号时自动同�
 
 账号首次登录、MFA、验证码及过期凭据重新认证仍需用户完成。新账号首次进入 Code 后才产生可用账户目录，随后保存账号会自动同步；尚未建立任何目标目录时，不猜测任务应导入哪个账户。
 
-### 个人与团队工作区（待下次发布）
+### 个人与团队工作区（v0.1.6）
 
 同一账号有多个本地工作区时，切换、首次保存和“同步并重载”会将共享的 Code 记录与本机定时任务补入该账号**所有已存在的工作区目录**，不再因组织目录不唯一而阻止切换。个人与团队的记录可以互相补齐，已有同 ID 会话的标题和设置保留；新副本使用默认权限，不继承其他工作区的审批。
 
