@@ -472,7 +472,7 @@ struct MainView: View {
                 Spacer()
                 Button("账户记录管理") { showRecordManager = true }.disabled(model.busy)
                 Button("已删除会话…") { model.reviewingSessionPurge = true; showDeletedSessions = true }.disabled(model.busy || model.status?.pendingRecovery == true)
-                Button("仅归档") { model.archive() }.disabled(model.busy)
+                Button("立即备份记录") { model.archive() }.disabled(model.busy)
                 Button("同步并重载") { model.sync() }.disabled(!canWrite)
             }
             if let count = model.status?.pendingDeletionCopies, count > 0 {
