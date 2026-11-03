@@ -179,19 +179,27 @@ final class History {
     func info(_ d: [String: Any], _ ts: [String: URL]) -> SessionInfo {
         SessionInfo(id: d["sessionId"] as? String ?? "", title: d["title"] as? String ?? "未命名会话", project: d["originCwd"] as? String ?? d["cwd"] as? String ?? "", lastActivity: (d["lastActivityAt"] as? NSNumber)?.doubleValue ?? 0, transcriptAvailable: ts[d["cliSessionId"] as? String ?? ""] != nil, archived: d["isArchived"] as? Bool ?? false, initializing: isInitializingCodeRecord(d), scheduledTaskID: d["scheduledTaskId"] as? String)
     }
-    // Existing records are never overwritten. Cross-account copies reset permissions and connector state.
+    // Existing records retain their settings; only missing, verified associations are filled.
+    // Cross-account copies reset permissions and connector state.
     func merge(into targets: [Owner], transaction: Transaction) throws -> Int {
         let deleted = try deletedSessions()
         let index = try readJSON(vault.appendingPathComponent("index.json"), optional: true)
         let ts = try transcripts()
-        var added = 0
-        let linked = Dictionary(grouping: try records().filter { $0.value["scheduledTaskId"] is String }, by: \.id)
+        let current = try records()
+        let lineage = SessionLineageResolver(vault: vault, records: current)
+        let linked = Dictionary(grouping: current.filter { $0.value["scheduledTaskId"] is String }, by: \.id)
+        var writes: [(target: URL, value: [String: Any], added: Bool, repaired: Bool)] = []
+        var graphs: [Owner: [String: [String: Any]]] = [:], starts: [Owner: Set<String>] = [:]
+        for record in current where deleted[record.id.lowercased()] == nil {
+            graphs[record.owner, default: [:]][record.id.lowercased()] = record.value
+        }
         let allowed: Set<String> = ["sessionId", "cliSessionId", "cwd", "originCwd", "title", "titleSource", "createdAt", "lastActivityAt", "model", "effort", "isArchived", "completedTurns", "priorCliSessionIds", "scheduledTaskId"]
         for (id, entry) in index.sorted(by: { $0.key < $1.key }) {
             guard validSession(id), let e = entry as? [String: Any], let hash = e["hash"] as? String, hash.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw SyncError("历史索引损坏") }
             if deleted[id.lowercased()] != nil { continue }
             let bytes = try Data(contentsOf: vault.appendingPathComponent("records/\(id)/\(hash).json"))
             guard sha(bytes) == hash, var original = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+                  original["sessionId"] as? String == id,
                   let cli = original["cliSessionId"] as? String, ts[cli] != nil else { continue }
             let taskIDs = Set((linked[id] ?? []).filter { $0.value["cliSessionId"] as? String == cli }.compactMap { $0.value["scheduledTaskId"] as? String })
             guard taskIDs.count <= 1 else { throw SyncError("会话 \(id) 的定时任务关联冲突，请先检查各账号记录。") }
@@ -201,22 +209,47 @@ final class History {
                 let tombstone = owner.directory.appendingPathComponent("deleted_" + id.dropFirst(6))
                 if exists(tombstone) { continue }
                 if exists(target) {
-                    // Repair pre-task-sync imports without overwriting the target's title/settings.
-                    if let task = original["scheduledTaskId"] as? String, LocalSchedule.validID(task) {
-                        var existing = try readJSON(target)
-                        if existing["scheduledTaskId"] == nil && existing["cliSessionId"] as? String == cli {
-                            existing["scheduledTaskId"] = task
-                            try transaction.write(existing, to: target)
+                    var existing = try readJSON(target)
+                    guard existing["sessionId"] as? String == id,
+                          existing["cliSessionId"] as? String == cli,
+                          existing["sshHost"] == nil, existing["remoteSessionId"] == nil,
+                          existing["environmentId"] == nil else { continue }
+                    var changed = false, repaired = false
+                    if existing["scheduledTaskId"] == nil, let task = original["scheduledTaskId"] as? String,
+                       LocalSchedule.validID(task) {
+                        existing["scheduledTaskId"] = task; changed = true
+                    }
+                    // Explicit detach/reparent choices belong to this workspace. Recover only
+                    // copies with no lineage fields, as produced by older Sync Claude versions.
+                    if !SessionLineage.hasMetadata(existing) {
+                        let recovered = try lineage.resolve(session: id, cli: cli)
+                        if !recovered.isEmpty {
+                            existing.merge(recovered) { _, new in new }; changed = true; repaired = true
+                            graphs[owner, default: [:]][id.lowercased()] = existing
+                            starts[owner, default: []].insert(id.lowercased())
                         }
                     }
+                    if changed { writes.append((target, existing, false, repaired)) }
                     continue
                 }
                 var copy = original.filter { allowed.contains($0.key) }
+                copy.merge(try lineage.resolve(session: id, cli: cli)) { _, new in new }
                 copy["permissionMode"] = "default"
                 copy["remoteControlAutoEligible"] = false
-                try transaction.write(copy, to: target); added += 1
+                graphs[owner, default: [:]][id.lowercased()] = copy
+                starts[owner, default: []].insert(id.lowercased())
+                writes.append((target, copy, true, false))
             }
         }
-        return added
+        // Check each resulting workspace before writing any of its planned records. Missing
+        // or deleted parents remain absent; a relationship never resurrects a deleted session.
+        for owner in targets {
+            try SessionLineage.validateGraph(graphs[owner] ?? [:], startingAt: starts[owner] ?? [])
+        }
+        for write in writes {
+            try transaction.write(write.value, to: write.target)
+            if write.repaired { transaction.lineageRepairs += 1 }
+        }
+        return writes.filter(\.added).count
     }
 }

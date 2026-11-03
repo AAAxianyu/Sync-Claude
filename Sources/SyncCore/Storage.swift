@@ -109,6 +109,7 @@ final class Transaction {
     var journal: Journal
     var beforeWrite: (() throws -> Void)?
     var taskImports = 0
+    var lineageRepairs = 0
     var syncedWorkspaceCount = 0
     var pending: URL { root.appendingPathComponent("pending.json") }
     init(root: URL, operation: String) throws {

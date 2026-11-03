@@ -140,7 +140,8 @@ public final class Engine {
                 let deletionSummary = deleted > 0 ? "已同步删除 \(deleted) 份其他账号中的会话记录。" : ""
                 let taskSummary = transaction.taskImports > 0 ? "已新增 \(transaction.taskImports) 份本机定时任务副本，保留启用/暂停状态；新工作区使用默认权限。" : ""
                 let workspaceSummary = transaction.syncedWorkspaceCount > 1 ? "已同步此账号的 \(transaction.syncedWorkspaceCount) 个本地工作区；请在 Claude 中选择个人或团队工作区。" : ""
-                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(workspaceSummary)\(taskSummary)\(deletionSummary)\(suffix)", added: added)
+                let lineageSummary = transaction.lineageRepairs > 0 ? "已修复 \(transaction.lineageRepairs) 份会话树关联。" : ""
+                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(workspaceSummary)\(lineageSummary)\(taskSummary)\(deletionSummary)\(suffix)", added: added)
             } catch {
                 if process.running {
                     throw SyncError("Claude 意外重新启动；已保留恢复日志。请退出 Claude 后点击“恢复未完成操作”。")
