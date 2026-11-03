@@ -421,6 +421,10 @@ struct MainView: View {
                 Spacer()
                 Button(p.active ? "重新应用" : p.kind == "account" ? "切换到此账号" : "切换到此配置") { model.switchTo(p) }.buttonStyle(.borderedProminent).controlSize(.large).disabled(!canWrite)
             } }
+            if let p = selected, p.workspaceCount > 1 {
+                Label("此账号有 \(p.workspaceCount) 个本地工作区。切换后在 Claude 中选择个人或团队，Code 记录与本机定时任务会同步到这些工作区。", systemImage: "person.2")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if needsAccountOnboarding { accountOnboarding }
             Divider()
             if let context = selected?.context {

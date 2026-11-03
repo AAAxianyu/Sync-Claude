@@ -127,15 +127,18 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(try engine.switchProfile(id: "official").added, 0)
         XCTAssertFalse(exists(target.appendingPathComponent("local_\(sid).json")))
     }
-    func testAmbiguousOrganizationRollsBackWithoutImporting() throws {
+    func testMultipleWorkspacesReceiveHistoryWithoutBlockingSync() throws {
         let source = try owner("Claude-3p", a), target = try owner("Claude", b)
         let other = target.deletingLastPathComponent().appendingPathComponent(gateway)
         try privateDir(other)
         _ = try fixture(source)
         try selectOfficial(b)
-        XCTAssertThrowsError(try engine.sync())
-        XCTAssertFalse(exists(target.appendingPathComponent("local_\(sid).json")))
-        XCTAssertFalse(exists(other.appendingPathComponent("local_\(sid).json")))
+        let outcome = try engine.sync()
+        XCTAssertEqual(outcome.added, 2)
+        XCTAssertTrue(outcome.message.contains("2 个本地工作区"))
+        XCTAssertTrue(outcome.message.contains("在 Claude 中选择"))
+        XCTAssertTrue(exists(target.appendingPathComponent("local_\(sid).json")))
+        XCTAssertTrue(exists(other.appendingPathComponent("local_\(sid).json")))
         XCTAssertTrue(process.running)
         XCTAssertFalse(exists(engine.state.appendingPathComponent("pending.json")))
     }

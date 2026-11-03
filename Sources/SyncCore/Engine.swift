@@ -9,6 +9,7 @@ public struct ProfileInfo: Codable, Identifiable {
     public var detail: String
     public var active: Bool
     public var context: GatewayContextInfo? = nil
+    public var workspaceCount: Int = 0
 }
 public struct Status: Codable {
     public let version: String
@@ -69,16 +70,16 @@ public final class Engine {
         let profile = try mode() == "3p" ? "Claude-3p" : "Claude"
         let config = try readJSON(support.appendingPathComponent(profile + "/config.json"), optional: true)
         guard let account = config["lastKnownAccountUuid"] as? String, uuid(account) else { return [] }
-        let targets = try history.owners().filter { $0.profile == profile && $0.account == account }
-        guard targets.count <= 1 else {
-            throw SyncError("当前账号有多个组织目录，无法可靠识别正在使用的组织；已停止同步，原始记录保留。")
-        }
-        return targets
+        // Every existing workspace of this identity receives local history. Claude owns
+        // the personal/team selection; directory ordering is never an active-org signal.
+        return try history.owners().filter { $0.profile == profile && $0.account == account }
     }
     func accounts() throws -> [[String: Any]] { try readJSON(registry, optional: true)["accounts"] as? [[String: Any]] ?? [] }
     func metadata() throws -> [String: Any] { try readJSON(library.appendingPathComponent("_meta.json"), optional: true) }
     public func status() throws -> Status {
         let mode = try mode(), meta = try metadata(), currentAccount = try accountID(), aliases = try profileAliases()
+        let owners = try history.owners()
+        let apiAccount = try readJSON(third.appendingPathComponent("config.json"), optional: true)["lastKnownAccountUuid"] as? String
         var profiles: [ProfileInfo] = []
         for entry in meta["entries"] as? [[String: Any]] ?? [] {
             guard let id = entry["id"] as? String, uuid(id) else { throw SyncError("原生配置库包含无效 ID") }
@@ -87,12 +88,12 @@ public final class Engine {
             // Display the host only; endpoints may contain credentials in paths or queries.
             let detail = URL(string: endpoint)?.host ?? config["inferenceProvider"] as? String ?? "原生配置"
             let originalName = entry["name"] as? String ?? "API 配置", alias = aliases[aliasKey(id: id, kind: "gateway")]
-            profiles.append(ProfileInfo(id: id, name: alias ?? originalName, originalName: originalName, alias: alias, kind: "gateway", detail: detail, active: mode == "3p" && meta["appliedId"] as? String == id, context: try gatewayContext(id: id)))
+            profiles.append(ProfileInfo(id: id, name: alias ?? originalName, originalName: originalName, alias: alias, kind: "gateway", detail: detail, active: mode == "3p" && meta["appliedId"] as? String == id, context: try gatewayContext(id: id), workspaceCount: owners.filter { $0.profile == "Claude-3p" && $0.account == apiAccount }.count))
         }
         for a in try accounts() {
             guard let id = a["id"] as? String, uuid(id), let account = a["account"] as? String else { throw SyncError("账号索引格式错误") }
             let originalName = a["name"] as? String ?? "官方账号", alias = aliases[aliasKey(id: id, kind: "account")]
-            profiles.append(ProfileInfo(id: id, name: alias ?? originalName, originalName: originalName, alias: alias, kind: "account", detail: "官方账号 · 本机登录快照", active: mode == "1p" && currentAccount == account))
+            profiles.append(ProfileInfo(id: id, name: alias ?? originalName, originalName: originalName, alias: alias, kind: "account", detail: "官方账号 · 本机登录快照", active: mode == "1p" && currentAccount == account, workspaceCount: owners.filter { $0.profile == "Claude" && $0.account == account }.count))
         }
         let canSave = mode == "1p" && currentAccount != nil && !profiles.contains { $0.kind == "account" && $0.active }
         return Status(version: version, compatible: DesktopCompatibility.supports(version), running: process.running, workers: process.workers, mode: mode, profiles: profiles, sessions: try history.catalog(), ownerCount: try history.owners().count, pendingRecovery: hasPendingOperation, pendingPurge: exists(pendingPurge) || exists(pendingSessionPurge), statePath: state.path, accountRecords: try accountRecords(), removedAccountRecords: try removedAccountRecords(), restoredAccountBackups: try restoredAccountBackups(), officialUsage: try officialUsage(), canSaveOfficialAccount: canSave, pendingDeletionCopies: try history.pendingDeletionCopies())
@@ -137,8 +138,9 @@ public final class Engine {
                 }
                 let suffix = (launch || wasRunning) ? "Claude 已重新打开；登录及 API 可用性请在客户端确认。" : "将在下次切换配置时生效。"
                 let deletionSummary = deleted > 0 ? "已同步删除 \(deleted) 份其他账号中的会话记录。" : ""
-                let taskSummary = transaction.taskImports > 0 ? "已同步 \(transaction.taskImports) 个本机定时任务，保留启用/暂停状态；新账户使用默认权限。" : ""
-                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(taskSummary)\(deletionSummary)\(suffix)", added: added)
+                let taskSummary = transaction.taskImports > 0 ? "已新增 \(transaction.taskImports) 份本机定时任务副本，保留启用/暂停状态；新工作区使用默认权限。" : ""
+                let workspaceSummary = transaction.syncedWorkspaceCount > 1 ? "已同步此账号的 \(transaction.syncedWorkspaceCount) 个本地工作区；请在 Claude 中选择个人或团队工作区。" : ""
+                return Outcome(message: "\(operation)完成，\(countLabel) \(added) \(countUnit)。\(workspaceSummary)\(taskSummary)\(deletionSummary)\(suffix)", added: added)
             } catch {
                 if process.running {
                     throw SyncError("Claude 意外重新启动；已保留恢复日志。请退出 Claude 后点击“恢复未完成操作”。")

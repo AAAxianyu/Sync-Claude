@@ -114,6 +114,12 @@ extension Engine {
     func readScheduleLedger() throws -> [String: Any] {
         let ledger = try readJSON(scheduleLedger, optional: true)
         guard ledger.isEmpty || ledger["version"] as? Int == 1 && ledger["tasks"] is [String: [String: Any]] else { throw SyncError("共享定时任务索引无法识别") }
+        if let raw = ledger["lastTargets"] {
+            guard let keys = raw as? [String], Set(keys).count == keys.count, keys.allSatisfy({ key in
+                let parts = key.components(separatedBy: "/")
+                return parts.count == 3 && ["Claude", "Claude-3p"].contains(parts[0]) && uuid(parts[1]) && uuid(parts[2])
+            }) else { throw SyncError("定时任务工作区同步基线无法识别") }
+        }
         for (id, entry) in ledger["tasks"] as? [String: [String: Any]] ?? [:] {
             guard LocalSchedule.validID(id), let definition = entry["definition"] as? [String: Any], definition["id"] as? String == id,
                   entry["copies"] is [String: String] else { throw SyncError("共享定时任务索引损坏") }
@@ -126,26 +132,26 @@ extension Engine {
     }
 
     /// Three-way reconciliation: a changed copy wins only if all changed copies agree.
-    /// A missing task counts as a native removal only in the previously tracked, active,
-    /// still-present manifest. Missing manifests/account directories never imply deletion.
+    /// A missing task is removal only in a source workspace successfully synchronized on
+    /// the previous operation. Missing manifests/account directories never imply deletion.
+    /// Resolve once before any destination write so directory order cannot change the result.
     func synchronizeTasks(from source: [Owner], into targets: [Owner], transaction tx: Transaction) throws -> Int {
+        let importFloor = ISO8601DateFormatter().string(from: Date())
         var manifests = try taskManifests(), ledger = try readScheduleLedger()
         let existingManifestOwners = Set(manifests.map { $0.owner.key })
         let originalFiles = try Dictionary(uniqueKeysWithValues: manifests.map { ($0.file, try digestTree($0.file)) })
         var promptFiles: [URL: String] = [:]
         var entries = ledger["tasks"] as? [String: [String: Any]] ?? [:]
         let hasTasks = manifests.contains { !$0.tasks.isEmpty } || entries.values.contains { $0["deleted"] as? Bool != true }
-        guard let target = targets.first else {
-            if hasTasks { throw SyncError("目标账号尚未建立唯一的 Code 目录；请先进入一次 Code，再同步定时任务。") }
+        guard !targets.isEmpty else {
+            if hasTasks { throw SyncError("目标账号尚未建立 Code 目录；请先在 Claude 中选择工作区并进入一次 Code，再同步定时任务。") }
             return 0
         }
-        guard targets.count == 1 else { throw SyncError("无法确定定时任务的目标组织") }
-        if !manifests.contains(where: { $0.owner == target }) {
+        for target in targets where !manifests.contains(where: { $0.owner == target }) {
             manifests.append(TaskManifest(owner: target, value: ["scheduledTasks": [], "recordedSkips": [:]]))
         }
-        let targetIndex = manifests.firstIndex { $0.owner == target }!
-        let active = source.count == 1 ? source[0].key : nil
-        let trackedActive = ledger["activeOwner"] as? String
+        let previousTargets = ledger["lastTargets"] as? [String] ?? (ledger["activeOwner"] as? String).map { [$0] } ?? []
+        let trackedSources = Set(source.map(\.key)).intersection(previousTargets)
         let ids = Set(entries.keys).union(manifests.flatMap { $0.tasks.compactMap { $0["id"] as? String } })
         var resolved: [String: [String: Any]] = [:], removed = Set<String>()
         for id in ids.sorted() {
@@ -153,9 +159,11 @@ extension Engine {
             var entry = entries[id] ?? [:]
             var baselines = entry["copies"] as? [String: String] ?? [:]
             let wasDeleted = entry["deleted"] as? Bool == true
-            let missingActive = active != nil && active == trackedActive && baselines[active!] != nil && existingManifestOwners.contains(active!)
-                && manifests.contains { $0.owner.key == active && !$0.tasks.contains { $0["id"] as? String == id } }
-            if wasDeleted || missingActive {
+            let missingSource = trackedSources.contains { key in
+                baselines[key] != nil && existingManifestOwners.contains(key)
+                    && manifests.contains { $0.owner.key == key && !$0.tasks.contains { $0["id"] as? String == id } }
+            }
+            if wasDeleted || missingSource {
                 // A recreated ID with a new definition needs explicit reconciliation, never erase it.
                 for (owner, task) in copies {
                     guard let baseline = baselines[owner], try LocalSchedule.fingerprint(task) == baseline else {
@@ -184,28 +192,25 @@ extension Engine {
                 let times = (copies.map { $0.1 } + [previousRuntime]).compactMap { $0[key] as? String }
                 task[key] = times.max { LocalSchedule.date($0)! < LocalSchedule.date($1)! }
             }
-            // Existing approvals belong to this exact account only. New imports start with default permissions.
-            if let existing = copies.first(where: { $0.0 == target.key })?.1 {
-                task.merge(existing.filter { LocalSchedule.localKeys.contains($0.key) }) { _, old in old }
-            } else {
+            if targets.contains(where: { target in !copies.contains { $0.0 == target.key } }) {
                 if task["enabled"] as? Bool == true, let fireAt = task["fireAt"] as? Double, fireAt <= Date().timeIntervalSince1970 * 1000 {
                     throw SyncError("单次定时任务“\(id)”已到执行时间；请先在原账户执行或停用，避免导入时意外补跑。")
                 }
-                task["permissionMode"] = "default"
-                task["chromePermissionMode"] = "ask"
-                // Native import semantics: don't trigger a catch-up run just by changing accounts.
-                let floor = ISO8601DateFormatter().string(from: Date())
-                if LocalSchedule.date(task["missedRunScanFloor"] as? String ?? "") ?? .distantPast < LocalSchedule.date(floor)! { task["missedRunScanFloor"] = floor }
+                // Use one scan floor for all destinations, including existing copies, so
+                // the resulting runtime union is independent of workspace write order.
+                if LocalSchedule.date(task["missedRunScanFloor"] as? String ?? "") ?? .distantPast < LocalSchedule.date(importFloor)! { task["missedRunScanFloor"] = importFloor }
             }
             if let ref = task["notifySessionId"] as? String {
                 if try history.deletedSessions()[ref.lowercased()] != nil { task.removeValue(forKey: "notifySessionId") }
-                else if !exists(target.directory.appendingPathComponent(ref + ".json")) {
+                else if targets.contains(where: { !exists($0.directory.appendingPathComponent(ref + ".json")) }) {
                     throw SyncError("定时任务“\(id)”的通知会话缺少可导入正文，请先恢复该会话或在 Claude 中移除通知关联。")
                 }
             }
-            try validateTaskModel(task, target: target)
             for (owner, copy) in copies { baselines[owner] = try LocalSchedule.fingerprint(copy) }
-            baselines[target.key] = try LocalSchedule.fingerprint(task)
+            for target in targets {
+                try validateTaskModel(task, target: target)
+                baselines[target.key] = try LocalSchedule.fingerprint(task)
+            }
             entry["definition"] = LocalSchedule.definition(task)
             entry["runtime"] = task.filter { LocalSchedule.runtimeKeys.contains($0.key) }
             entry["copies"] = baselines
@@ -213,45 +218,63 @@ extension Engine {
         }
         let names = Dictionary(grouping: resolved.values, by: LocalSchedule.titleKey)
         guard names.values.allSatisfy({ $0.count == 1 }) else { throw SyncError("不同定时任务使用了相同名称；请在 Claude 中改名后切换，避免重复调度。") }
-        var destination = manifests[targetIndex].value
-        destination["scheduledTasks"] = resolved.keys.sorted().compactMap { resolved[$0] }
-        // Union skip history, retaining retry state only when unambiguous. Never replay a stale retry.
-        for key in ["recordedSkips", "recordedPlaceSkips"] {
-            var combined = (destination[key] as? [String: Any] ?? [:]).filter { !removed.contains($0.key) }
-            for id in resolved.keys {
-                var rows: [String: Any] = [:]
-                for manifest in manifests {
-                    if let raw = (manifest.value[key] as? [String: Any])?[id] {
-                        guard let list = raw as? [[String: Any]] else { throw SyncError("定时任务“\(id)”的跳过记录无法识别") }
-                        for row in list { rows[try sha(jsonData(row))] = row }
+        var destinations: [(TaskManifest, [String: Any])] = [], imported = 0
+        for target in targets {
+            let original = manifests.first { $0.owner == target }!
+            var destination = original.value
+            destination["scheduledTasks"] = resolved.keys.sorted().map { id -> [String: Any] in
+                var task = resolved[id]!
+                // Approvals belong to this exact account/workspace, never its sibling.
+                if let existing = original.tasks.first(where: { $0["id"] as? String == id }) {
+                    task.merge(existing.filter { LocalSchedule.localKeys.contains($0.key) }) { _, old in old }
+                } else {
+                    task["permissionMode"] = "default"; task["chromePermissionMode"] = "ask"
+                    imported += 1
+                }
+                return task
+            }
+            // Union skip history, retaining retry state only when unambiguous. Never replay a stale retry.
+            for key in ["recordedSkips", "recordedPlaceSkips"] {
+                var combined = (destination[key] as? [String: Any] ?? [:]).filter { !removed.contains($0.key) }
+                for id in resolved.keys {
+                    var rows: [String: Any] = [:]
+                    for manifest in manifests {
+                        if let raw = (manifest.value[key] as? [String: Any])?[id] {
+                            guard let list = raw as? [[String: Any]] else { throw SyncError("定时任务“\(id)”的跳过记录无法识别") }
+                            for row in list { rows[try sha(jsonData(row))] = row }
+                        }
+                    }
+                    if !rows.isEmpty {
+                        combined[id] = rows.keys.sorted().compactMap { rows[$0] as? [String: Any] }.sorted {
+                            ($0["at"] as? Double ?? 0) < ($1["at"] as? Double ?? 0)
+                        }
                     }
                 }
-                if !rows.isEmpty {
-                    combined[id] = rows.keys.sorted().compactMap { rows[$0] as? [String: Any] }.sorted {
-                        ($0["at"] as? Double ?? 0) < ($1["at"] as? Double ?? 0)
-                    }
+                if !combined.isEmpty || destination[key] != nil { destination[key] = combined }
+            }
+            for manifest in manifests {
+                if let retries = manifest.value["runRetries"] as? [String: Any], !retries.isEmpty {
+                    throw SyncError("有定时任务正在等待重试；请在 Claude 中完成或取消重试后再切换。")
                 }
             }
-            if !combined.isEmpty || destination[key] != nil { destination[key] = combined }
-        }
-        for manifest in manifests {
-            if let retries = manifest.value["runRetries"] as? [String: Any], !retries.isEmpty {
-                throw SyncError("有定时任务正在等待重试；请在 Claude 中完成或取消重试后再切换。")
+            // Migration flags must agree; transferring an unstamped cron can change its meaning.
+            for key in ["sundayAliasBoundaryStamped", "dayFieldsOrBoundaryStamped"] {
+                let flags = Set(manifests.filter { !$0.tasks.isEmpty }.map { $0.value[key] as? Bool ?? false })
+                guard flags.count <= 1 else { throw SyncError("账户间定时任务调度格式不同，请先分别打开 Claude 完成原生迁移。") }
+                if let flag = flags.first { destination[key] = flag }
             }
+            destinations.append((original, destination))
         }
-        // Migration flags must agree; transferring an unstamped cron can change its meaning.
-        for key in ["sundayAliasBoundaryStamped", "dayFieldsOrBoundaryStamped"] {
-            let flags = Set(manifests.filter { !$0.tasks.isEmpty }.map { $0.value[key] as? Bool ?? false })
-            guard flags.count <= 1 else { throw SyncError("账户间定时任务调度格式不同，请先分别打开 Claude 完成原生迁移。") }
-            if let flag = flags.first { destination[key] = flag }
-        }
-        let imported = resolved.keys.filter { id in !manifests[targetIndex].tasks.contains { $0["id"] as? String == id } }.count
         for (file, fingerprint) in originalFiles.merging(promptFiles, uniquingKeysWith: { original, _ in original }) {
             guard exists(file), try digestTree(file) == fingerprint else { throw SyncError("定时任务或提示词在同步期间发生变化，已停止操作，请重试。") }
         }
-        if !existingManifestOwners.contains(target.key), exists(manifests[targetIndex].file) { throw SyncError("目标任务登记在同步期间出现，请重试。") }
-        if try jsonData(destination) != jsonData(manifests[targetIndex].value) { try tx.write(destination, to: manifests[targetIndex].file) }
-        for manifest in manifests where manifest.owner != target && manifest.tasks.contains(where: { removed.contains($0["id"] as? String ?? "") }) {
+        for (original, _) in destinations where !existingManifestOwners.contains(original.owner.key) {
+            guard !exists(original.file) else { throw SyncError("目标任务登记在同步期间出现，请重试。") }
+        }
+        for (original, destination) in destinations {
+            if try jsonData(destination) != jsonData(original.value) { try tx.write(destination, to: original.file) }
+        }
+        for manifest in manifests where !targets.contains(manifest.owner) && manifest.tasks.contains(where: { removed.contains($0["id"] as? String ?? "") }) {
             var value = manifest.value
             value["scheduledTasks"] = manifest.tasks.filter { !removed.contains($0["id"] as? String ?? "") }
             for key in ["recordedSkips", "recordedPlaceSkips", "runRetries"] {
@@ -260,7 +283,11 @@ extension Engine {
             try tx.write(value, to: manifest.file)
         }
         if hasTasks || !entries.isEmpty {
-            ledger["version"] = 1; ledger["tasks"] = entries; ledger["activeOwner"] = target.key
+            ledger["version"] = 1; ledger["tasks"] = entries
+            ledger["lastTargets"] = targets.map(\.key).sorted()
+            // Older versions can still use the single-workspace baseline. No guessed
+            // active workspace is persisted when Claude will make that choice.
+            ledger["activeOwner"] = targets.count == 1 ? targets[0].key : nil
             try tx.write(ledger, to: scheduleLedger)
         }
         return imported
@@ -280,18 +307,25 @@ extension Engine {
         let sessions = try history.merge(into: targets, transaction: tx)
         let tasks = try synchronizeTasks(from: source, into: targets, transaction: tx)
         tx.taskImports = tasks
+        tx.syncedWorkspaceCount = targets.count
         return sessions
     }
 
-    /// Cleaning an old account is allowed only after the active account has a complete,
-    /// reconciled copy. Shared prompt files are outside both account directories.
+    /// The active account's every workspace must have a reconciled copy before cleanup.
     func tasksPreservedOutside(_ owner: Owner) throws -> Bool {
         let targets = try syncTargets()
-        guard targets.count == 1, let target = targets.first, target != owner else { return false }
+        guard !targets.isEmpty, !targets.contains(owner) else { return false }
         let manifests = try taskManifests()
-        guard let source = manifests.first(where: { $0.owner == owner }),
-              let destination = manifests.first(where: { $0.owner == target }) else { return false }
+        guard let source = manifests.first(where: { $0.owner == owner }) else { return false }
         let entries = try readScheduleLedger()["tasks"] as? [String: [String: Any]] ?? [:]
+        for target in targets {
+            guard let destination = manifests.first(where: { $0.owner == target }),
+                  try taskCopyPreserved(source, in: destination, entries: entries) else { return false }
+        }
+        return true
+    }
+
+    private func taskCopyPreserved(_ source: TaskManifest, in destination: TaskManifest, entries: [String: [String: Any]]) throws -> Bool {
         for task in source.tasks {
             try LocalSchedule.validate(task, home: home)
             let id = task["id"] as! String
@@ -299,8 +333,8 @@ extension Engine {
                   let copy = destination.tasks.first(where: { $0["id"] as? String == id }),
                   let baselines = entry["copies"] as? [String: String],
                   try LocalSchedule.fingerprint(task) == LocalSchedule.fingerprint(copy),
-                  try LocalSchedule.fingerprint(task) == baselines[owner.key],
-                  try LocalSchedule.fingerprint(copy) == baselines[target.key] else { return false }
+                  try LocalSchedule.fingerprint(task) == baselines[source.owner.key],
+                  try LocalSchedule.fingerprint(copy) == baselines[destination.owner.key] else { return false }
             try LocalSchedule.validate(copy, home: home)
             for key in LocalSchedule.runtimeKeys {
                 if let timestamp = task[key] as? String {
