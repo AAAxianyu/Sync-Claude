@@ -7,6 +7,7 @@ struct ScheduledRunManager: View {
     let remove: (ScheduledRunRemovalPreview) -> Void
     @State private var records: [ScheduledRunInfo] = []
     @State private var selection = Set<String>()
+    @State private var expandedTasks = Set<String>()
     @State private var task = ""
     @State private var owner = ""
     @State private var days = 0
@@ -19,6 +20,18 @@ struct ScheduledRunManager: View {
             (task.isEmpty || $0.taskID == task) && (owner.isEmpty || $0.owners.contains(owner))
                 && (!completedOnly || $0.canRemove)
                 && (days == 0 || $0.lastActivity / 1000 >= Date().addingTimeInterval(-Double(days) * 86400).timeIntervalSince1970)
+        }
+    }
+    var removableIDs: Set<String> { Set(visible.filter(\.canRemove).map(\.id)) }
+    private var groups: [ScheduledRunGroup] {
+        Dictionary(grouping: visible, by: \.taskID).map { id, runs in
+            ScheduledRunGroup(id: id, runs: runs.sorted {
+                if $0.lastActivity != $1.lastActivity { return $0.lastActivity > $1.lastActivity }
+                return $0.id < $1.id
+            })
+        }.sorted {
+            if $0.lastActivity != $1.lastActivity { return $0.lastActivity > $1.lastActivity }
+            return $0.id < $1.id
         }
     }
     var body: some View {
@@ -45,22 +58,15 @@ struct ScheduledRunManager: View {
                     Text("全部时间").tag(0); Text("近 7 天").tag(7); Text("近 30 天").tag(30)
                 }.frame(width: 155)
             }
-            Toggle("仅显示已确认结束、可移除的运行", isOn: $completedOnly).toggleStyle(.checkbox)
+            HStack {
+                Toggle("仅显示已确认结束、可移除的运行", isOn: $completedOnly).toggleStyle(.checkbox)
+                Spacer()
+                Text("\(groups.count) 个任务 · \(visible.count) 次运行 · \(removableIDs.count) 条可移除").font(.caption).foregroundStyle(.secondary)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(visible) { row in
-                        HStack(alignment: .top, spacing: 12) {
-                            Toggle("选择 \(row.title)", isOn: Binding(get: { selection.contains(row.id) }, set: { if $0 { selection.insert(row.id) } else { selection.remove(row.id) } }))
-                                .labelsHidden().toggleStyle(.checkbox).disabled(loading || !row.canRemove)
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(row.title).font(.headline)
-                                Text("任务：\(row.taskID) · \(Date(timeIntervalSince1970: row.lastActivity / 1000).formatted(date: .abbreviated, time: .shortened))").font(.caption)
-                                Text(row.project).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                Text(row.blockedReason ?? "已结束 · 可移除列表记录").font(.caption).foregroundStyle(row.canRemove ? Color.secondary : Color.orange)
-                                Text("\(row.owners.count) 个账户副本").font(.caption2).foregroundStyle(.secondary).help(row.owners.joined(separator: "\n"))
-                            }
-                            Spacer()
-                        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                    ForEach(groups) { group in
+                        taskGroup(group)
                     }
                     if visible.isEmpty && !loading { Text("没有符合条件的本机任务运行记录").foregroundStyle(.secondary).padding() }
                 }
@@ -69,9 +75,10 @@ struct ScheduledRunManager: View {
                 Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 Button("提交 Issue…") { IssueReporter.open() }.font(.caption)
             }
-            Text("移除后会传播到所有账户；正文与备份保留，可在“已删除会话”中另行预览并永久清理。仍有 Code 进程或缺少结束证据时不能移除。云端与 Cowork 不在此范围。").font(.caption).foregroundStyle(.secondary)
+            Text("移除后会传播到所有账户。正文与备份保留，可在“已删除会话”中另行预览并永久清理。等待输入、中断待续或缺少结束证据的记录暂不可移除。存在 Code 进程时会先确认正常退出，退出后再次核对所选记录。云端与 Cowork 不在此范围。").font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("选择本页可移除项") { selection = Set(visible.filter(\.canRemove).map(\.id)) }.disabled(loading)
+                Button("全选可移除项") { selection = removableIDs }.disabled(loading || removableIDs.isEmpty)
+                Button("取消全选") { selection.removeAll() }.disabled(loading || selection.isEmpty)
                 Text("已选 \(selection.count) 条").font(.caption)
                 Spacer()
                 Button("关闭") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -90,13 +97,56 @@ struct ScheduledRunManager: View {
             Text("Claude 会正常退出并重开。所选记录会从所有账户列表移除，归档和目录恢复不会重新带回。任务与后续调度保留；正文、附件、项目文件和备份不在此次删除范围。\n\n将解除 \(preview?.notificationReferences ?? 0) 处指向这些运行的通知会话引用，避免任务继续向已移除的会话发送通知。")
         }
     }
+    private func taskGroup(_ group: ScheduledRunGroup) -> some View {
+        let ids = group.removableIDs
+        let selectedCount = selection.intersection(ids).count
+        return DisclosureGroup(isExpanded: Binding(
+            get: { expandedTasks.contains(group.id) },
+            set: { if $0 { expandedTasks.insert(group.id) } else { expandedTasks.remove(group.id) } }
+        )) {
+            VStack(spacing: 8) {
+                ForEach(group.runs) { row in runRow(row) }
+            }.padding(.top, 10).padding(.leading, 12)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(group.id).font(.headline).lineLimit(1).help(group.id)
+                    Text("\(group.runs.count) 次运行 · \(ids.count) 条可移除 · 已选 \(selectedCount) 条").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(!ids.isEmpty && ids.isSubset(of: selection) ? "取消本组选中" : "全选本组") {
+                    if ids.isSubset(of: selection) { selection.subtract(ids) }
+                    else { selection.formUnion(ids) }
+                }.buttonStyle(.borderless).disabled(loading || ids.isEmpty)
+            }
+        }.padding(12).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+    }
+    func runRow(_ row: ScheduledRunInfo) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Toggle("选择 \(row.title)", isOn: Binding(
+                get: { selection.contains(row.id) },
+                set: { if $0 { selection.insert(row.id) } else { selection.remove(row.id) } }
+            )).labelsHidden().toggleStyle(.checkbox).disabled(loading || !row.canRemove)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(row.title).font(.subheadline.weight(.medium))
+                Text(Date(timeIntervalSince1970: row.lastActivity / 1000).formatted(date: .abbreviated, time: .shortened)).font(.caption)
+                Text(row.project).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(row.blockedReason ?? "已结束 · 可移除列表记录").font(.caption).foregroundStyle(row.canRemove ? Color.secondary : Color.orange)
+                Text("\(row.owners.count) 个账户副本").font(.caption2).foregroundStyle(.secondary).help(row.owners.joined(separator: "\n"))
+            }
+            Spacer()
+        }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+    }
     func load() async {
         guard !loading else { return }
         loading = true; error = nil
         let engine = model.engine
         do {
             records = try await Task.detached { try engine.scheduledRuns() }.value
-            selection.formIntersection(records.filter(\.canRemove).map(\.id))
+            if !task.isEmpty && !records.contains(where: { $0.taskID == task }) { task = "" }
+            if !owner.isEmpty && !records.contains(where: { $0.owners.contains(owner) }) { owner = "" }
+            selection.formIntersection(removableIDs)
+            expandedTasks.formIntersection(records.map(\.taskID))
         } catch { self.error = error.localizedDescription }
         loading = false
     }
@@ -110,4 +160,11 @@ struct ScheduledRunManager: View {
             loading = false
         }
     }
+}
+
+private struct ScheduledRunGroup: Identifiable {
+    let id: String
+    let runs: [ScheduledRunInfo]
+    var lastActivity: Double { runs.first?.lastActivity ?? 0 }
+    var removableIDs: Set<String> { Set(runs.filter(\.canRemove).map(\.id)) }
 }

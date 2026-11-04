@@ -167,7 +167,7 @@ struct SyncClaudeApp: App {
     func confirmRestart() { let work = pendingRestart; pendingRestart = nil; askToRestart = false; work?() }
     func cancelRestart() { pendingRestart = nil; askToRestart = false }
     func sync() { restarting("正在保存历史、同步记录并重载 Claude…") { try $0.sync(allowOpenSessions: $1) } }
-    func removeRuns(_ preview: ScheduledRunRemovalPreview) { run("正在移除已完成的任务运行历史…") { try $0.removeScheduledRuns(preview) } }
+    func removeRuns(_ preview: ScheduledRunRemovalPreview) { restarting("正在移除已完成的任务运行历史…") { try $0.removeScheduledRuns(preview, allowOpenSessions: $1) } }
     func switchTo(_ profile: ProfileInfo) { restarting("正在切换到 \(profile.name)…") { try $0.switchProfile(id: profile.id, allowOpenSessions: $1) } }
     func saveAccount(_ name: String) {
         guard status?.canSaveOfficialAccount == true else { return }

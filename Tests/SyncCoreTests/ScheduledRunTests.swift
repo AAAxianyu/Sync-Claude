@@ -2,8 +2,8 @@ import XCTest
 @testable import SyncCore
 
 extension CoreTests {
-    func completeRun(_ directory: URL, id: String? = nil) throws -> URL {
-        let id = id ?? sid, file = try scheduledRun(directory, id: id)
+    func completeRun(_ directory: URL, id: String? = nil, task: String = "daily-review") throws -> URL {
+        let id = id ?? sid, file = try scheduledRun(directory, id: id, task: task)
         let event: [String: Any] = ["type": "assistant", "message": ["stop_reason": "end_turn", "content": [["type": "text", "text": "Done."]]]]
         var bytes = try JSONSerialization.data(withJSONObject: event); bytes.append(10)
         try atomicData(bytes, root.appendingPathComponent(".claude/projects/-fixture/\(id).jsonl"))
@@ -42,16 +42,49 @@ extension CoreTests {
     func testRunRemovalRejectsWorkingWaitingAndInterruptedRuns() throws {
         let directory = try owner("Claude", b)
         let file = try completeRun(directory)
-        process.workers = 1
-        XCTAssertFalse(try XCTUnwrap(engine.scheduledRuns().first).canRemove)
-        XCTAssertThrowsError(try engine.previewScheduledRunRemoval(ids: ["local_" + sid]))
-        process.workers = 0
         var value = try readJSON(file); value["interruptedAwaitingPerson"] = true; try atomicJSON(value, file)
         XCTAssertFalse(try XCTUnwrap(engine.scheduledRuns().first).canRemove)
         value["interruptedAwaitingPerson"] = NSNull(); value["cutTurn"] = NSNull(); try atomicJSON(value, file)
         XCTAssertTrue(try XCTUnwrap(engine.scheduledRuns().first).canRemove)
         value["armedWorkAtQuit"] = ["reason": "resume"]; try atomicJSON(value, file)
         XCTAssertFalse(try XCTUnwrap(engine.scheduledRuns().first).canRemove)
+    }
+    func testCompletedRunsCanBeSelectedAcrossTasksWithOpenSessions() throws {
+        let directory = try owner("Claude", b)
+        let first = try completeRun(directory)
+        let second = try completeRun(directory, id: gateway, task: "weekly-review")
+        let waiting = try scheduledRun(directory, id: a)
+        _ = try taskFixture(directory)
+        _ = try taskFixture(directory, id: "weekly-review")
+        process.workers = 2
+        let runs = try engine.scheduledRuns()
+        let ids = runs.filter(\.canRemove).map(\.id)
+        XCTAssertEqual(Set(ids), Set(["local_" + sid, "local_" + gateway]))
+        let preview = try engine.previewScheduledRunRemoval(ids: ids)
+        XCTAssertThrowsError(try engine.removeScheduledRuns(preview))
+        XCTAssertEqual(process.stops, 0)
+        XCTAssertEqual(try engine.removeScheduledRuns(preview, allowOpenSessions: true).added, 2)
+        XCTAssertEqual(process.stops, 1)
+        XCTAssertEqual(process.starts, 1)
+        XCTAssertFalse(exists(first)); XCTAssertFalse(exists(second)); XCTAssertTrue(exists(waiting))
+        XCTAssertEqual(try tasks(directory).count, 2)
+        XCTAssertEqual(try engine.scheduledRuns().map(\.id), ["local_" + a])
+    }
+    func testConfirmedRunRemovalRechecksStateAfterStoppingClaude() throws {
+        let directory = try owner("Claude", b), file = try completeRun(directory)
+        let preview = try engine.previewScheduledRunRemoval(ids: ["local_" + sid])
+        process.workers = 1
+        process.onStop = {
+            var value = try readJSON(file)
+            value["interruptedAwaitingPerson"] = true
+            try atomicJSON(value, file)
+        }
+        XCTAssertThrowsError(try engine.removeScheduledRuns(preview, allowOpenSessions: true))
+        XCTAssertTrue(exists(file))
+        XCTAssertFalse(exists(directory.appendingPathComponent("deleted_\(sid)")))
+        XCTAssertTrue(try engine.history.deletedSessions().isEmpty)
+        XCTAssertFalse(exists(engine.state.appendingPathComponent("pending.json")))
+        XCTAssertTrue(process.running)
     }
     func testCompletedTurnsAndArchivedFlagAloneDoNotPermitRunRemoval() throws {
         let directory = try owner("Claude", b), file = try scheduledRun(directory)

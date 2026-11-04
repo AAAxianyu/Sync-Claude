@@ -20,10 +20,9 @@ public struct ScheduledRunRemovalPreview: Codable, Identifiable {
 
 extension Engine {
     /// A completed turn count or archive flag alone is never evidence that a run ended.
-    /// Require a terminal transcript event and no potentially attached Code process.
-    func scheduledRunBlock(_ copies: [Record], transcript: URL?, workers: Int) throws -> String? {
+    /// A terminal transcript event permits selection. Mutation stops Claude and rechecks it.
+    func scheduledRunBlock(_ copies: [Record], transcript: URL?) throws -> String? {
         if copies.contains(where: { $0.initializing }) { return "正在初始化" }
-        if workers > 0 { return "仍有 Code 会话进程；待任务结束并退出会话进程后刷新" }
         for record in copies {
             for key in ["isRunning", "interruptedAwaitingPerson", "interruptedUnseenResume", "armedWorkAtQuit"] {
                 if let flag = record.value[key], !(flag is NSNull), (flag as? Bool) != false { return "仍在运行、等待输入或有中断待续任务" }
@@ -51,13 +50,12 @@ extension Engine {
 
     public func scheduledRuns() throws -> [ScheduledRunInfo] {
         let records = try history.records(), deleted = try history.deletedSessions(), transcripts = try history.transcripts()
-        let workers = process.workers
         return try Dictionary(grouping: records, by: \.id).compactMap { id, copies in
             guard deleted[id.lowercased()] == nil, let record = copies.max(by: { $0.activity < $1.activity }),
                   let task = copies.compactMap({ $0.value["scheduledTaskId"] as? String }).first else { return nil }
             let taskIDs = Set(copies.compactMap { $0.value["scheduledTaskId"] as? String })
             let cliIDs = Set(copies.compactMap { $0.value["cliSessionId"] as? String })
-            let reason = taskIDs.count != 1 || cliIDs.count != 1 ? "账户间的任务或正文关联不一致" : try scheduledRunBlock(copies, transcript: transcripts[record.value["cliSessionId"] as? String ?? ""], workers: workers)
+            let reason = taskIDs.count != 1 || cliIDs.count != 1 ? "账户间的任务或正文关联不一致" : try scheduledRunBlock(copies, transcript: transcripts[record.value["cliSessionId"] as? String ?? ""])
             return ScheduledRunInfo(id: id, taskID: task, title: record.value["title"] as? String ?? "未命名运行",
                 project: record.value["originCwd"] as? String ?? record.value["cwd"] as? String ?? "",
                 owners: copies.map { $0.owner.key }.sorted(), lastActivity: record.activity, blockedReason: reason)
@@ -84,10 +82,8 @@ extension Engine {
         return ScheduledRunRemovalPreview(runs: runs, notificationReferences: notifications, fingerprint: sha(Data(fingerprints.sorted().joined(separator: "\n").utf8)))
     }
 
-    public func removeScheduledRuns(_ preview: ScheduledRunRemovalPreview) throws -> Outcome {
-        // Do not offer an "allow active sessions" override for deleting run history.
-        guard process.workers == 0 else { throw SyncError("仍有 Code 会话进程，尚不能移除任务运行历史") }
-        return try mutate("移除任务运行历史", configuration: false, countLabel: "移除运行记录", countUnit: "条") { tx in
+    public func removeScheduledRuns(_ preview: ScheduledRunRemovalPreview, allowOpenSessions: Bool = false) throws -> Outcome {
+        return try mutate("移除任务运行历史", configuration: false, allowOpenSessions: allowOpenSessions, countLabel: "移除运行记录", countUnit: "条") { tx in
             let ids = preview.runs.map(\.id), selected = Set(ids)
             let current = try previewScheduledRunRemoval(ids: ids)
             guard current.fingerprint == preview.fingerprint else { throw SyncError("运行或任务引用已变化，请重新预览后移除") }

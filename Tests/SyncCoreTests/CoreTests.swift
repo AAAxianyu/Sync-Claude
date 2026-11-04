@@ -7,9 +7,11 @@ final class FakeProcess: ClaudeProcess {
     var stops = 0
     var starts = 0
     var failStart = false
+    var onStop: (() throws -> Void)?
     func stop(allowOpenSessions: Bool) throws {
         if workers > 0 && !allowOpenSessions { throw SyncError("active workers") }
         stops += 1; running = false; workers = 0
+        try onStop?()
     }
     func start() throws {
         starts += 1
