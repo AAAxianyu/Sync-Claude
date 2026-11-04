@@ -1,9 +1,9 @@
 import Foundation
 
-/// Exact Desktop builds whose native storage and configuration contracts were inspected.
-/// Do not replace this with a version range: a newer build may change login or history formats.
+/// Installed Desktop builds are allowed by default. Operations validate the data they use.
 public enum DesktopCompatibility {
-    public static let verifiedVersions = ["4.29.0", "4.4212.0"]
-    public static func supports(_ version: String) -> Bool { verifiedVersions.contains(version) }
-    public static var description: String { verifiedVersions.joined(separator: "、") }
+    public static func supports(_ version: String) -> Bool {
+        let value = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !value.isEmpty && value != "未安装"
+    }
 }

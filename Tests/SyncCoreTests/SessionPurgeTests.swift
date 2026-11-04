@@ -85,7 +85,8 @@ extension CoreTests {
         XCTAssertFalse(exists(bodyFile))
     }
 
-    func testSessionPurgeRejectsChangedPreviewActiveWorkersAndUnknownDesktop() throws {
+    func testSessionPurgeRejectsChangedPreviewAndActiveWorkersOnUnverifiedDesktop() throws {
+        engine = Engine(home: root, process: process, version: "99.0.0")
         _ = try deletedFixture()
         let preview = try engine.previewSessionPurge(ids: [deletedID])
         process.workers = 1
@@ -94,8 +95,6 @@ extension CoreTests {
         try atomicData(Data("changed body\n".utf8), bodyFile)
         XCTAssertThrowsError(try engine.purgeDeletedSessions(preview))
         XCTAssertTrue(exists(bodyFile)); XCTAssertFalse(exists(engine.pendingSessionPurge))
-        let unknown = Engine(home: root, process: process, version: "99.0.0")
-        XCTAssertThrowsError(try unknown.previewSessionPurge(ids: [deletedID]))
         XCTAssertThrowsError(try engine.previewSessionPurge(ids: ["local_" + gateway]))
     }
 

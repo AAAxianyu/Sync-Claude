@@ -337,7 +337,10 @@ struct MainView: View {
         }) {
             AccountRecordManager(model: model, clean: { pendingCleanup = $0; showRecordManager = false }, restore: { pendingRestore = $0; showRecordManager = false }, purge: { pendingPurge = $0; showRecordManager = false })
         }
-        .alert("操作未完成", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) { Button("知道了") { model.error = nil } } message: { Text(model.error ?? "") }
+        .alert("操作未完成", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            Button("提交 Issue…") { IssueReporter.open() }
+            Button("知道了", role: .cancel) { model.error = nil }
+        } message: { Text((model.error ?? "") + "\n\n如果功能持续无法使用，可到 GitHub 提交 Issue。") }
         .alert("删除“\(model.deletionPreview?.name ?? "此配置")”？", isPresented: Binding(get: { model.deletionPreview != nil }, set: { if !$0 { model.deletionPreview = nil } })) {
             Button("删除配置", role: .destructive) { if let preview = model.deletionPreview { model.deleteProfile(preview) }; model.deletionPreview = nil }
             Button("取消", role: .cancel) { model.deletionPreview = nil }
@@ -407,7 +410,7 @@ struct MainView: View {
                 Label("上次操作尚未完成，请先恢复。", systemImage: "exclamationmark.arrow.triangle.2.circlepath").foregroundStyle(.orange)
                 Button("恢复未完成操作") { model.recover() }.disabled(model.busy)
             } else if model.status?.compatible == false {
-                Text("当前客户端版本还未验证写入兼容性，记录查看和归档仍可使用。").foregroundStyle(.orange)
+                Text("未检测到 Claude Desktop，请先安装并打开一次。记录查看和归档仍可使用。").foregroundStyle(.orange)
             }
             if let p = selected { HStack {
                 VStack(alignment: .leading, spacing: 6) {
@@ -525,6 +528,7 @@ struct MainView: View {
             HStack(spacing: 10) {
                 if model.busy { ProgressView().controlSize(.small) } else { Image(systemName: model.backgroundIssue == nil ? "checkmark.circle" : "exclamationmark.circle").foregroundStyle(model.backgroundIssue == nil ? Color.secondary : Color.orange) }
                 Text(model.backgroundIssue ?? model.activity).font(.caption).foregroundStyle(model.backgroundIssue == nil ? Color.secondary : Color.orange).lineLimit(3)
+                if model.backgroundIssue != nil { Button("提交 Issue…") { IssueReporter.open() }.font(.caption) }
                 Spacer()
                 Toggle("后台归档", isOn: $model.autoArchive).toggleStyle(.switch).controlSize(.mini).font(.caption).help("每 30 秒保留本地记录；不在 Claude 运行时写回。切换配置时自动同步。")
             }.padding(.horizontal, 22).padding(.vertical, 13)

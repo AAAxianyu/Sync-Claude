@@ -196,7 +196,7 @@ extension Engine {
         try await refreshUsage(credential: { try self.usageCredential($0) }, fetch: { try await UsageHTTPClient().fetch($0) })
     }
     func refreshUsage(credential: (String) throws -> UsageCredential, fetch: (String) async throws -> Data) async throws -> Outcome {
-        guard DesktopCompatibility.supports(version) else { throw SyncError("此版本的登录格式尚未适配，用量缓存仍可查看。") }
+        guard DesktopCompatibility.supports(version) else { throw SyncError("未检测到 Claude Desktop，请先安装并打开一次。") }
         let previous = try locked(state) { try officialUsage() }
         var updates: [String: OfficialUsage] = [:], succeeded = 0
         for var row in previous {

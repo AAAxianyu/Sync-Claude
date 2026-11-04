@@ -13,6 +13,7 @@ public struct ProfileInfo: Codable, Identifiable {
 }
 public struct Status: Codable {
     public let version: String
+    /// Whether Desktop operations are available, without requiring an inspected version.
     public let compatible: Bool
     public let running: Bool
     public let workers: Int
@@ -106,7 +107,7 @@ public final class Engine {
         }
     }
     func checkCompatibility(configuration: Bool) throws {
-        guard DesktopCompatibility.supports(version) else { throw SyncError("当前适配 Claude \(DesktopCompatibility.description)；检测到 \(version)。只读归档可用，写入需先验证新版格式。") }
+        guard DesktopCompatibility.supports(version) else { throw SyncError("未检测到 Claude Desktop，请先安装并打开一次。") }
         if configuration {
             let managed = URL(fileURLWithPath: "/Library/Managed Preferences/com.anthropic.claudefordesktop.plist")
             if exists(managed) { throw SyncError("检测到 MDM 管理配置；请通过组织配置管理切换。") }

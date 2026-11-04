@@ -85,7 +85,8 @@ struct AccountRecordManager: View {
             }
         }
         .alert("无法准备永久清除", isPresented: Binding(get: { preparationError != nil }, set: { if !$0 { preparationError = nil } })) {
-            Button("知道了") { preparationError = nil }
+            Button("提交 Issue…") { IssueReporter.open() }
+            Button("知道了", role: .cancel) { preparationError = nil }
         } message: { Text(preparationError ?? "") }
     }
 

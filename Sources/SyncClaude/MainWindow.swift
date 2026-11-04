@@ -62,5 +62,8 @@ struct MainWindowCommands: Commands {
         CommandGroup(replacing: .newItem) {
             OpenMainWindowButton().keyboardShortcut("0")
         }
+        CommandGroup(replacing: .help) {
+            Button("提交 Issue…") { IssueReporter.open() }
+        }
     }
 }

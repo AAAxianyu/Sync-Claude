@@ -62,7 +62,10 @@ struct UpdateOverview: View {
                 Text(latest.version == ReleaseVersion(model.currentVersion) ? "已是最新正式版本。" : "最新公开版本为 \(latest.version?.description ?? latest.tag)，当前本机版本更新。")
             } else if model.lastChecked != nil { Text("暂时没有可用的正式版本。") }
             if model.checking { HStack { ProgressView().controlSize(.small); Text("正在检查…") } }
-            if let error = model.checkError { Text(error).font(.caption).foregroundStyle(.orange) }
+            if let error = model.checkError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+                Button("提交 Issue…") { IssueReporter.open() }.font(.caption)
+            }
             if let date = model.lastChecked { Text("上次成功检查：\(date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary) }
             Divider()
             Toggle("自动检查更新", isOn: $model.automatic)

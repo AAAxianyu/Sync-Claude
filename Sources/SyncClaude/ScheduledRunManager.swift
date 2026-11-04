@@ -65,7 +65,10 @@ struct ScheduledRunManager: View {
                     if visible.isEmpty && !loading { Text("没有符合条件的本机任务运行记录").foregroundStyle(.secondary).padding() }
                 }
             }.frame(minHeight: 240, maxHeight: 390)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                Button("提交 Issue…") { IssueReporter.open() }.font(.caption)
+            }
             Text("移除后会传播到所有账户；正文与备份保留，可在“已删除会话”中另行预览并永久清理。仍有 Code 进程或缺少结束证据时不能移除。云端与 Cowork 不在此范围。").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("选择本页可移除项") { selection = Set(visible.filter(\.canRemove).map(\.id)) }.disabled(loading)

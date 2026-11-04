@@ -38,7 +38,10 @@ struct DeletedSessionManager: View {
                     if records.isEmpty && !loading { Text("没有需要清理的已删除会话").foregroundStyle(.secondary).padding() }
                 }
             }.frame(minHeight: 260, maxHeight: 420)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                Button("提交 Issue…") { IssueReporter.open() }.font(.caption)
+            }
             Text("预览会列出具体文件和占用。正文被其他会话共用时会阻止清理；范围变化后需要重新确认。").font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("全选") { selection = Set(records.map(\.id)) }.disabled(loading || records.isEmpty)

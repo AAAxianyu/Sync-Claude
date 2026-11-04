@@ -114,13 +114,14 @@ extension CoreTests {
         XCTAssertTrue(exists(file))
     }
 
-    func testUnknownDesktopCanHideDeletedHistoryButCannotPropagateWrites() throws {
+    func testUnverifiedDesktopCanPropagateExplicitDeletions() throws {
         let directory = try owner("Claude", a), file = try fixture(directory)
         _ = try deletionMarker(directory)
         let unknown = Engine(home: root, process: process, version: "99.0.0")
         XCTAssertTrue(try unknown.status().sessions.isEmpty)
         XCTAssertEqual(try unknown.status().pendingDeletionCopies, 1)
-        XCTAssertThrowsError(try unknown.sync())
-        XCTAssertTrue(exists(file)); XCTAssertEqual(process.stops, 0)
+        _ = try unknown.sync()
+        XCTAssertFalse(exists(file))
+        XCTAssertEqual(try unknown.status().pendingDeletionCopies, 0)
     }
 }

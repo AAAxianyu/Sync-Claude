@@ -1,19 +1,19 @@
 # Sync Claude
 
-面向 **macOS Claude Desktop 4.29.0 / 4.4212.0** 的原生小工具：保存官方账号、切换第三方 API 配置，让本机 Code 会话记录和主动删除决定在账号之间同步。
+面向 **macOS Claude Desktop** 的原生小工具，保存官方账号、切换第三方 API 配置，让本机 Code 会话记录和主动删除决定在账号之间同步。
 
 采用 SwiftUI + Foundation + macOS Keychain，不需要 npm、Python 或本地后台服务。官方订阅用量通过 Anthropic 用量接口只读查询。
 
-**v0.1.7**：修复切换账号后 Claude Code 侧栏子任务层级丢失，保留多层父子关系、分叉位置与“移到顶层”选择，并从有效原记录或归档补回旧副本缺失的关联。验证范围见[会话树验证记录](docs/validation-session-lineage.md)。继续支持[个人与团队工作区同步](docs/validation-workspaces.md)和[本机定时任务同步](docs/validation-scheduled-tasks.md)。
+**v0.1.8** 默认允许新版 Claude Desktop 继续使用各项功能。操作失败时可通过“提交 Issue…”打开仓库反馈草稿，预填应用、Claude 和 macOS 版本，补充复现信息后提交。
 
 ## 下载与安装
 
-从 [最新 Release](https://github.com/Chiiz0/Sync-Claude/releases/latest) 下载 `Sync-Claude-0.1.7-macos-arm64.zip`，解压后将 **Sync Claude.app** 放到 `/Applications` 或 `~/Applications`，再打开使用。请先安装并打开一次 Claude Desktop。
+从 [最新 Release](https://github.com/Chiiz0/Sync-Claude/releases/latest) 下载 `Sync-Claude-0.1.8-macos-arm64.zip`，解压后将 **Sync Claude.app** 放到 `/Applications` 或 `~/Applications`，再打开使用。请先安装并打开一次 Claude Desktop。
 
-v0.1.7 在切换账户、同步并重载及首次保存官方账号时，将记录、会话树关联和本机定时任务同步到该账号已有的个人、团队工作区。继续支持定时任务运行历史清理、窗口恢复、Claude Desktop 4.4212.0、跨账号会话删除同步及范围预览与永久清理。升级前退出 Sync Claude，将新应用替换到原安装位置，再重新打开，即可保留本机配置、账号快照及归档。升级后点击一次“同步并重载”即可补回可恢复的旧会话关联；安装更新不会自动执行永久清理。
+v0.1.8 支持新版 Claude Desktop，并提供功能异常反馈入口。升级前退出 Sync Claude，将新应用替换到原安装位置，再重新打开，即可保留本机配置、账号快照及归档。
 
 - 系统要求：macOS 13+；预编译包仅支持 Apple Silicon。
-- Claude 原生数据写入适配：**4.29.0 / 4.4212.0**；未知版本保持只读归档。
+- 默认允许新版 Claude Desktop 继续使用切换、同步、清理和用量查询，遇到实际数据格式或接口错误时给出具体提示。
 - 发行包使用 Developer ID 签名、Apple 公证，并附带公证票据。
 - 可用 Release 附带的 `SHA256SUMS` 检查下载文件：`shasum -a 256 -c SHA256SUMS`。
 
@@ -44,6 +44,8 @@ v0.1.7 在切换账户、同步并重载及首次保存官方账号时，将记�
 已保存的当前官方账号显示“当前账号已保存”；切换离开时自动更新快照，改名使用“编辑别名”。只有新登录且未保存的账号显示可用的保存入口。新会话的首次启动占位记录显示“正在初始化”，待 CLI 会话 ID 就绪后才归档；后台异常在底部显示，成功归档后清除，真实损坏不会静默忽略。
 
 账号首次登录、MFA、验证码及过期凭据重新认证仍需用户完成。新账号首次进入 Code 后才产生可用账户目录，随后保存账号会自动同步；尚未建立任何目标目录时，不猜测任务应导入哪个账户。
+
+功能持续失败时提供 **提交 Issue…** 入口，也可从 **帮助** 菜单打开。浏览器中的仓库反馈草稿会预填 Sync Claude、Claude Desktop 和 macOS 版本，补充脱敏后的错误提示及复现步骤后由用户提交。
 
 ### 个人与团队工作区（v0.1.6）
 
@@ -86,7 +88,7 @@ Claude Desktop 在启动时读取推理配置，因此这里是**自动重启切
 - 各模式已有会话的模型选择分别保留。首次导入后，如果原模型不在目标账号订阅或 API 的可用范围内，需要在 Claude 中选择可用模型再续聊。
 - 官方账号快照包括 Electron 的 Cookies、本地存储和加密 token cache。只用于这台 Mac、同一系统用户；不导出或迁移系统钥匙串。不要在 Claude 中注销后期待被服务端撤销的登录仍能复用。
 - 用量查询从当前官方登录或已校验的账号快照读取 Code 凭据，在内存中解密；仅向固定的 `https://api.anthropic.com/api/oauth/usage` 发起读取请求，拒绝重定向。不刷新/改写登录 token，不将凭据存入用量缓存，不通过第三方 API 查询官方额度。此接口属于客户端内部接口，未来变化可能需要更新适配。
-- MDM 或组织下发的配置不被覆盖。当前源码的 Claude 原生数据写入适配已核验的 **4.29.0、4.4212.0**；其他版本仍可查看、归档和编辑工具内的别名，需更新适配后才能修改 Claude 配置。
+- 默认尝试兼容已安装的 Claude Desktop，包括未经逐版核验的新版本。操作按实际数据格式、账号身份和文件内容校验，失败时提示原因，事务写入失败时回滚并保留恢复材料。MDM 或组织下发的配置受保护。
 
 ## 数据与恢复
 

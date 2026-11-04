@@ -31,7 +31,6 @@ final class CoreTests: XCTestCase {
         root = project.appendingPathComponent(".build/test-fixtures/\(UUID().uuidString)")
         try privateDir(root)
         let version = ProcessInfo.processInfo.environment["SYNC_CLAUDE_TEST_DESKTOP_VERSION"] ?? "4.29.0"
-        guard DesktopCompatibility.supports(version) else { throw SyncError("Unsupported fixture Desktop version: \(version)") }
         process = FakeProcess(); engine = Engine(home: root, process: process, version: version)
         try atomicJSON(["deploymentMode": "3p", "preferences": ["theme": "dark"]], engine.third.appendingPathComponent("claude_desktop_config.json"))
         try atomicJSON(["entries": [["id": gateway, "name": "Gateway"]], "appliedId": gateway, "custom": "preserve"], engine.library.appendingPathComponent("_meta.json"))
@@ -162,12 +161,6 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(process.stops, 1)
         XCTAssertEqual(process.starts, 1)
         XCTAssertEqual(try engine.mode(), "1p")
-    }
-    func testUnverifiedVersionOnlyAllowsArchive() throws {
-        let future = Engine(home: root, process: process, version: "9.0.0")
-        XCTAssertThrowsError(try future.switchProfile(id: "official"))
-        XCTAssertNoThrow(try future.archive())
-        XCTAssertEqual(process.stops, 0)
     }
     func testAccountSnapshotsPreserveAndRefreshEachIdentity() throws {
         _ = try engine.switchProfile(id: "official")

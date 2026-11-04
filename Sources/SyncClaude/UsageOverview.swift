@@ -26,7 +26,10 @@ struct UsageOverview: View {
                                 Spacer()
                                 Text(String(account.id.prefix(8))).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                             }
-                            if let error = account.error { Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+                            if let error = account.error {
+                                Label(error, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                                Button("提交 Issue…") { IssueReporter.open() }.font(.caption)
+                            }
                             if account.windows.isEmpty {
                                 Text(model.usageBusy ? "正在读取官方用量…" : "尚无可用数据").font(.subheadline).foregroundStyle(.secondary)
                             }
