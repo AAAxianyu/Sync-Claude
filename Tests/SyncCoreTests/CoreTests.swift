@@ -240,7 +240,6 @@ final class CoreTests: XCTestCase {
         }
         _ = try engine.archive()
         XCTAssertEqual(try transcriptSnapshots(), [content])
-        XCTAssertTrue(exists(engine.history.vault.appendingPathComponent("transcript-compaction.json")))
     }
     func testDivergentTranscriptVersionsAreKept() throws {
         let d = try owner("Claude-3p", a); _ = try fixture(d)
@@ -255,7 +254,7 @@ final class CoreTests: XCTestCase {
         try atomicData(appended, source); _ = try engine.archive()
         XCTAssertEqual(Set(try transcriptSnapshots()), [original, appended])
     }
-    func testExistingArchiveIsCompactedOnceWithoutRemovingUnverifiedFiles() throws {
+    func testLegacyArchiveAndLaterOldVersionWritesAreCompactedWithoutRemovingUnverifiedFiles() throws {
         let d = try owner("Claude-3p", a); _ = try fixture(d, transcript: false)
         let other = "55555555-5555-4555-8555-555555555555"
         let folder = engine.history.vault.appendingPathComponent("transcripts/\(other)")
@@ -266,14 +265,128 @@ final class CoreTests: XCTestCase {
         // A file whose name is not its hash is not trusted as evidence and is never removed.
         let mislabeled = folder.appendingPathComponent(String(repeating: "0", count: 64) + ".jsonl")
         try atomicData(Data("{\"a\":1}\n".utf8), mislabeled)
-        _ = try engine.archive()
+        // The original PR's completion marker is not a permanent opt-out.
+        try atomicJSON(["version": 1], engine.history.vault.appendingPathComponent("transcript-compaction.json"))
+        let result = try engine.compactHistory()
+        XCTAssertEqual(result.removedFiles, 2)
+        XCTAssertEqual(result.reclaimedBytes, Int64(prefixes.reduce(0) { $0 + $1.count }))
+        XCTAssertTrue(result.failures.isEmpty)
         XCTAssertEqual(Set(try transcriptSnapshots(other)), [full, fork, Data("{\"a\":1}\n".utf8)])
         XCTAssertTrue(exists(mislabeled))
-        // Later rounds rely on the marker and leave folders without new snapshots alone.
+        XCTAssertEqual(try engine.compactHistory().removedFiles, 0)
+        // A downgraded app, interrupted ingest, or restored archive can add an old
+        // prefix even when the current Desktop has no corresponding transcript.
         let late = prefixes[0]
         try atomicData(late, folder.appendingPathComponent(sha(late) + ".jsonl"))
+        XCTAssertEqual(try engine.compactHistory().removedFiles, 1)
+        XCTAssertFalse(exists(folder.appendingPathComponent(sha(late) + ".jsonl")))
+    }
+    @discardableResult
+    func archivedBody(_ data: Data, id: String? = nil) throws -> URL {
+        let file = engine.history.vault.appendingPathComponent("transcripts/\(id ?? sid)/\(sha(data)).jsonl")
+        try atomicData(data, file)
+        return file
+    }
+    func testCompactionWorksWithoutArchivingOrValidLiveRecords() throws {
+        let directory = try owner("Claude-3p", a), record = try fixture(directory)
+        let broken = Data("not JSON".utf8)
+        try atomicData(broken, record)
+        let prefix = Data("{\"old\":1}\n".utf8), full = prefix + Data("{\"new\":2}\n".utf8)
+        let old = try archivedBody(prefix), latest = try archivedBody(full)
+        process.workers = 2
+        let result = try engine.compactHistory()
+        XCTAssertEqual(result.removedFiles, 1)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertFalse(exists(old))
+        XCTAssertEqual(try Data(contentsOf: latest), full)
+        XCTAssertEqual(try Data(contentsOf: record), broken)
+        XCTAssertFalse(exists(engine.history.vault.appendingPathComponent("index.json")))
+        XCTAssertEqual(process.stops, 0)
+        XCTAssertEqual(process.workers, 2)
+        // A regular archive also reclaims legacy bytes before parsing live records.
+        try archivedBody(prefix)
+        XCTAssertThrowsError(try engine.archive())
+        XCTAssertFalse(exists(old))
+    }
+    func testCompactionRetriesAfterSnapshotWasWrittenButCleanupDidNotRun() throws {
+        let directory = try owner("Claude-3p", a); _ = try fixture(directory)
+        let source = root.appendingPathComponent(".claude/projects/-fixture/\(sid).jsonl")
+        let prefix = Data("{\"a\":1}\n".utf8), full = prefix + Data("{\"b\":2}\n".utf8)
+        try atomicData(full, source)
+        try archivedBody(full)
+        _ = try engine.compactHistory()
+        let old = try archivedBody(prefix)
+        // The destination already exists, so ingest does not need to write it again.
         _ = try engine.archive()
-        XCTAssertTrue(exists(folder.appendingPathComponent(sha(late) + ".jsonl")))
+        XCTAssertFalse(exists(old))
+        XCTAssertEqual(try transcriptSnapshots(), [full])
+        XCTAssertEqual(try Data(contentsOf: source), full)
+    }
+    func testCompactionDefersForEveryPendingOperation() throws {
+        let prefix = Data("{\"a\":1}\n".utf8), full = prefix + Data("{\"b\":2}\n".utf8)
+        let old = try archivedBody(prefix); try archivedBody(full)
+        for pending in [engine.state.appendingPathComponent("pending.json"), engine.pendingPurge, engine.pendingSessionPurge] {
+            try atomicJSON([:], pending)
+            XCTAssertThrowsError(try engine.compactHistory())
+            XCTAssertTrue(exists(old))
+            try fm.removeItem(at: pending)
+        }
+        XCTAssertEqual(try engine.compactHistory().removedFiles, 1)
+    }
+    func testBrokenArchiveDoesNotBlockOtherFoldersAndIsRetried() throws {
+        let prefix = Data("{\"a\":1}\n".utf8), full = prefix + Data("{\"b\":2}\n".utf8)
+        let outside = root.appendingPathComponent("external.jsonl")
+        try atomicData(prefix, outside)
+        let badFull = try archivedBody(full, id: a)
+        let link = badFull.deletingLastPathComponent().appendingPathComponent(sha(prefix) + ".jsonl")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+        let old = try archivedBody(prefix); try archivedBody(full)
+        let first = try engine.compactHistory()
+        XCTAssertEqual(first.failures.count, 1)
+        XCTAssertEqual(first.removedFiles, 1)
+        XCTAssertFalse(exists(old))
+        XCTAssertEqual(try Data(contentsOf: outside), prefix)
+        try fm.removeItem(at: link)
+        try archivedBody(prefix, id: a)
+        let retry = try engine.compactHistory()
+        XCTAssertTrue(retry.failures.isEmpty)
+        XCTAssertEqual(retry.removedFiles, 1)
+        XCTAssertEqual(try Data(contentsOf: badFull), full)
+    }
+    func testUnverifiedLongerSnapshotCannotAuthorizeDeletion() throws {
+        let prefix = Data("{\"a\":1}\n".utf8), full = prefix + Data("{\"b\":2}\n".utf8)
+        let old = try archivedBody(prefix), folder = old.deletingLastPathComponent()
+        let bad = folder.appendingPathComponent(String(repeating: "0", count: 64) + ".jsonl")
+        let unknown = folder.appendingPathComponent("manual.jsonl")
+        try atomicData(full, bad); try atomicData(full, unknown)
+        XCTAssertEqual(try engine.compactHistory().removedFiles, 0)
+        XCTAssertEqual(try Data(contentsOf: old), prefix)
+        XCTAssertEqual(try Data(contentsOf: bad), full)
+        XCTAssertEqual(try Data(contentsOf: unknown), full)
+    }
+    func testStreamingCompactionPreservesBranchesPastChunkBoundary() throws {
+        let common = Data(("{\"text\":\"" + String(repeating: "x", count: 1024 * 1024 + 37)).utf8)
+        let prefix = common + Data("a\"}\n".utf8)
+        let full = prefix + Data("{\"next\":1}\n".utf8)
+        let fork = common + Data("b\"}\n{\"next\":2}\n".utf8)
+        try archivedBody(prefix); try archivedBody(full); try archivedBody(fork)
+        let result = try engine.compactHistory()
+        XCTAssertEqual(result.removedFiles, 1)
+        XCTAssertEqual(result.reclaimedBytes, Int64(prefix.count))
+        XCTAssertEqual(Set(try transcriptSnapshots()), [full, fork])
+    }
+    func testManyLegacySnapshotsKeepOnlyTheirFullContent() throws {
+        var content = Data(), total: Int64 = 0
+        for turn in 0..<80 {
+            content.append(Data("{\"turn\":\(turn),\"text\":\"\(String(repeating: "x", count: 16 * 1024))\"}\n".utf8))
+            try archivedBody(content)
+            total += Int64(content.count)
+        }
+        let result = try engine.compactHistory()
+        XCTAssertEqual(result.removedFiles, 79)
+        XCTAssertEqual(result.reclaimedBytes, total - Int64(content.count))
+        XCTAssertEqual(try transcriptSnapshots(), [content])
+        XCTAssertEqual(try engine.compactHistory().removedFiles, 0)
     }
     func testStatusDoesNotExposeGatewayCredentialsOrURLPath() throws {
         let text = String(decoding: try JSONEncoder().encode(engine.status()), as: UTF8.self)

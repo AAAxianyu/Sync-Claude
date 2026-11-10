@@ -21,6 +21,14 @@ struct SyncClaudeApp: App {
             do { print(try Engine().archive().message); exit(0) }
             catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
         }
+        if args.contains("--compact-history") {
+            do {
+                let result = try Engine().compactHistory()
+                print(result.message)
+                guard result.failures.isEmpty else { throw SyncError(result.failures.joined(separator: "\n")) }
+                exit(0)
+            } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+        }
         if args.contains("--deleted-sessions") || args.contains("--preview-session-purge") {
             do {
                 let engine = Engine(), data: Data
@@ -93,6 +101,8 @@ struct SyncClaudeApp: App {
     @Published var activity = "正在读取本机状态…"
     @Published var error: String?
     @Published var backgroundIssue: String?
+    @Published var archiveMaintenanceIssue: String?
+    var visibleBackgroundIssue: String? { archiveMaintenanceIssue ?? backgroundIssue }
     private var backgroundIssueFromArchive = false
     @Published var autoArchive = UserDefaults.standard.object(forKey: "archive.automatic") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoArchive, forKey: "archive.automatic") }
@@ -109,21 +119,40 @@ struct SyncClaudeApp: App {
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.busy, !self.reviewingSessionPurge else { return }
-                if self.autoArchive && self.status?.pendingRecovery != true { self.archive(silent: true) } else { self.refresh(silent: true) }
+                self.refresh(silent: true, archiveAutomatically: self.autoArchive && self.status?.pendingRecovery != true)
             }
         }
     }
-    func refresh(silent: Bool = false) {
+    func refresh(silent: Bool = false, archiveAutomatically: Bool = false) {
         guard !busy else { return }
         busy = true
         Task {
+            // Legacy space reclamation must not depend on the archive toggle or on
+            // successful parsing of live records. Pause it while a purge is reviewed.
+            if !reviewingSessionPurge {
+                do {
+                    let result = try await Task.detached { [engine] in try engine.compactHistory() }.value
+                    archiveMaintenanceIssue = result.failures.isEmpty ? nil : "旧归档精简未完成，将重试：\(result.failures.joined(separator: "；"))"
+                    if result.removedFiles > 0 { activity = result.message }
+                } catch { archiveMaintenanceIssue = "旧归档精简待重试：\(error.localizedDescription)" }
+            }
             do {
+                if archiveAutomatically {
+                    _ = try await Task.detached { [engine] in try engine.archive() }.value
+                    backgroundIssueFromArchive = false
+                    backgroundIssue = nil
+                }
                 let result = try await Task.detached { [engine] in try engine.status() }.value
                 status = result
                 // A status refresh does not prove a previously failed archive has recovered.
                 if !backgroundIssueFromArchive { backgroundIssue = nil }
                 if activity == "正在读取本机状态…" { activity = "已读取本机数据，切换时自动合并 Code 记录。" }
-            } catch { report(error, background: silent) }
+            } catch {
+                report(error, background: silent, archive: archiveAutomatically)
+                if archiveAutomatically, let latest = try? await Task.detached(operation: { [engine] in try engine.status() }).value {
+                    status = latest
+                }
+            }
             busy = false
         }
     }
@@ -528,9 +557,9 @@ struct MainView: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 10) {
-                if model.busy { ProgressView().controlSize(.small) } else { Image(systemName: model.backgroundIssue == nil ? "checkmark.circle" : "exclamationmark.circle").foregroundStyle(model.backgroundIssue == nil ? Color.secondary : Color.orange) }
-                Text(model.backgroundIssue ?? model.activity).font(.caption).foregroundStyle(model.backgroundIssue == nil ? Color.secondary : Color.orange).lineLimit(3)
-                if model.backgroundIssue != nil { Button("提交 Issue…") { IssueReporter.open() }.font(.caption) }
+                if model.busy { ProgressView().controlSize(.small) } else { Image(systemName: model.visibleBackgroundIssue == nil ? "checkmark.circle" : "exclamationmark.circle").foregroundStyle(model.visibleBackgroundIssue == nil ? Color.secondary : Color.orange) }
+                Text(model.visibleBackgroundIssue ?? model.activity).font(.caption).foregroundStyle(model.visibleBackgroundIssue == nil ? Color.secondary : Color.orange).lineLimit(3)
+                if model.visibleBackgroundIssue != nil { Button("提交 Issue…") { IssueReporter.open() }.font(.caption) }
                 Spacer()
                 Toggle("后台归档", isOn: $model.autoArchive).toggleStyle(.switch).controlSize(.mini).font(.caption).help("每 30 秒保留本地记录；不在 Claude 运行时写回。切换配置时自动同步。")
             }.padding(.horizontal, 22).padding(.vertical, 13)
