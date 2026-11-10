@@ -94,7 +94,9 @@ struct SyncClaudeApp: App {
     @Published var error: String?
     @Published var backgroundIssue: String?
     private var backgroundIssueFromArchive = false
-    @Published var autoArchive = true
+    @Published var autoArchive = UserDefaults.standard.object(forKey: "archive.automatic") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoArchive, forKey: "archive.automatic") }
+    }
     @Published var askToRestart = false
     @Published var usageBusy = false
     @Published var deletionPreview: ProfileDeletionPreview?
