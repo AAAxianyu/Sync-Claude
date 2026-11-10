@@ -153,11 +153,62 @@ final class History {
                 var content = try Data(contentsOf: source)
                 if let lastLF = content.lastIndex(of: 10) { content = content.prefix(through: lastLF) } else { continue }
                 let hash = sha(content), copy = vault.appendingPathComponent("transcripts/\(id)/\(hash).jsonl")
-                if !exists(copy) { try atomicData(content, copy) }
+                if !exists(copy) {
+                    try atomicData(content, copy)
+                    _ = try compactTranscripts(copy.deletingLastPathComponent())
+                }
             }
+        }
+        // Archives written before compaction existed are reduced once; afterwards only
+        // folders that just received a new snapshot need to be checked again.
+        let marker = vault.appendingPathComponent("transcript-compaction.json")
+        if !exists(marker) {
+            let root = vault.appendingPathComponent("transcripts")
+            try safePath(root)
+            if exists(root) {
+                for folder in try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where uuid(folder.lastPathComponent) {
+                    _ = try compactTranscripts(folder)
+                }
+            }
+            try atomicJSON(["version": 1], marker)
         }
         try atomicJSON(index, vault.appendingPathComponent("index.json"))
         return index.keys.filter { deleted[$0.lowercased()] == nil }.count
+    }
+    /// Claude only appends to a JSONL transcript, so each archived snapshot is normally a
+    /// byte prefix of the next one. Remove a snapshot only when a hash-verified, longer
+    /// snapshot in the same folder starts with exactly its bytes. Rewritten or forked
+    /// versions, and files whose name does not match their content, are kept.
+    @discardableResult
+    func compactTranscripts(_ folder: URL) throws -> (removed: Int, bytes: Int64) {
+        try safePath(folder)
+        guard exists(folder) else { return (0, 0) }
+        var snapshots: [(url: URL, size: Int64)] = []
+        for file in try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+            let name = file.deletingPathExtension().lastPathComponent
+            guard file.pathExtension == "jsonl", name.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { continue }
+            try safePath(file)
+            let attributes = try fm.attributesOfItem(atPath: file.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else { continue }
+            snapshots.append((file, (attributes[.size] as? NSNumber)?.int64Value ?? 0))
+        }
+        guard snapshots.count > 1 else { return (0, 0) }
+        var kept: [Data] = [], removed = 0, bytes: Int64 = 0
+        for snapshot in snapshots.sorted(by: { $0.size != $1.size ? $0.size > $1.size : $0.url.path < $1.url.path }) {
+            let data = try Data(contentsOf: snapshot.url)
+            guard sha(data) == snapshot.url.deletingPathExtension().lastPathComponent else { continue }
+            if kept.contains(where: { $0.count > data.count && $0.starts(with: data) }) {
+                try fm.removeItem(at: snapshot.url)
+                removed += 1; bytes += Int64(data.count)
+            } else {
+                kept.append(data)
+            }
+        }
+        if removed > 0 {
+            let fd = open(folder.path, O_RDONLY)
+            if fd >= 0 { _ = fsync(fd); close(fd) }
+        }
+        return (removed, bytes)
     }
     func catalog() throws -> [SessionInfo] {
         let deleted = try deletedSessions()

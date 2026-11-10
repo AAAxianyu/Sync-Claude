@@ -224,6 +224,57 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: XCTUnwrap(versions.first)), Data("{\"valid\":true}\n".utf8))
         XCTAssertEqual(try Data(contentsOf: source), data)
     }
+    func transcriptSnapshots(_ id: String? = nil) throws -> [Data] {
+        let folder = engine.history.vault.appendingPathComponent("transcripts/\(id ?? sid)")
+        return try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "jsonl" }.map { try Data(contentsOf: $0) }.sorted { $0.count < $1.count }
+    }
+    func testAppendedTranscriptKeepsOnlyLatestSnapshot() throws {
+        let d = try owner("Claude-3p", a); _ = try fixture(d)
+        let source = root.appendingPathComponent(".claude/projects/-fixture/\(sid).jsonl")
+        var content = Data()
+        for turn in 0..<20 {
+            content.append(Data("{\"turn\":\(turn),\"text\":\"\(String(repeating: "x", count: 1000))\"}\n".utf8))
+            try atomicData(content, source)
+            _ = try engine.archive()
+        }
+        _ = try engine.archive()
+        XCTAssertEqual(try transcriptSnapshots(), [content])
+        XCTAssertTrue(exists(engine.history.vault.appendingPathComponent("transcript-compaction.json")))
+    }
+    func testDivergentTranscriptVersionsAreKept() throws {
+        let d = try owner("Claude-3p", a); _ = try fixture(d)
+        let source = root.appendingPathComponent(".claude/projects/-fixture/\(sid).jsonl")
+        let original = Data("{\"a\":1}\n{\"b\":2}\n".utf8)
+        try atomicData(original, source); _ = try engine.archive()
+        // Not an append: the earlier archive holds bytes the new transcript no longer has.
+        let rewritten = Data("{\"a\":1}\n{\"c\":3}\n".utf8)
+        try atomicData(rewritten, source); _ = try engine.archive()
+        XCTAssertEqual(Set(try transcriptSnapshots()), [original, rewritten])
+        let appended = rewritten + Data("{\"d\":4}\n".utf8)
+        try atomicData(appended, source); _ = try engine.archive()
+        XCTAssertEqual(Set(try transcriptSnapshots()), [original, appended])
+    }
+    func testExistingArchiveIsCompactedOnceWithoutRemovingUnverifiedFiles() throws {
+        let d = try owner("Claude-3p", a); _ = try fixture(d, transcript: false)
+        let other = "55555555-5555-4555-8555-555555555555"
+        let folder = engine.history.vault.appendingPathComponent("transcripts/\(other)")
+        let full = Data("{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n".utf8)
+        let prefixes = [Data("{\"a\":1}\n".utf8), Data("{\"a\":1}\n{\"b\":2}\n".utf8)]
+        let fork = Data("{\"a\":1}\n{\"z\":9}\n".utf8)
+        for data in prefixes + [full, fork] { try atomicData(data, folder.appendingPathComponent(sha(data) + ".jsonl")) }
+        // A file whose name is not its hash is not trusted as evidence and is never removed.
+        let mislabeled = folder.appendingPathComponent(String(repeating: "0", count: 64) + ".jsonl")
+        try atomicData(Data("{\"a\":1}\n".utf8), mislabeled)
+        _ = try engine.archive()
+        XCTAssertEqual(Set(try transcriptSnapshots(other)), [full, fork, Data("{\"a\":1}\n".utf8)])
+        XCTAssertTrue(exists(mislabeled))
+        // Later rounds rely on the marker and leave folders without new snapshots alone.
+        let late = prefixes[0]
+        try atomicData(late, folder.appendingPathComponent(sha(late) + ".jsonl"))
+        _ = try engine.archive()
+        XCTAssertTrue(exists(folder.appendingPathComponent(sha(late) + ".jsonl")))
+    }
     func testStatusDoesNotExposeGatewayCredentialsOrURLPath() throws {
         let text = String(decoding: try JSONEncoder().encode(engine.status()), as: UTF8.self)
         XCTAssertFalse(text.contains("private-test-key"))
