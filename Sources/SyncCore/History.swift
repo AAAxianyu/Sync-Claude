@@ -74,6 +74,9 @@ final class History {
     let home: URL
     let vault: URL
     let isRunning: () -> Bool
+    // A per-process optimization, never a permanent migration-complete flag. A
+    // restart rechecks all folders; old versions can add copies at any time.
+    var compactedTranscriptInventories: [URL: String] = [:]
     init(support: URL, home: URL, state: URL, isRunning: @escaping () -> Bool = { false }) {
         self.support = support; self.home = home; self.vault = state.appendingPathComponent("history")
         self.isRunning = isRunning
@@ -132,6 +135,9 @@ final class History {
         return result
     }
     func ingest() throws -> Int {
+        // Reclaim legacy copies before allocating another full transcript, even if
+        // reading the current Desktop records will fail later in this operation.
+        try compactArchivedTranscripts().checkFailures()
         let deleted = try rememberDeletions()
         let records = try records(), transcripts = try transcripts()
         try privateDir(vault)
@@ -153,9 +159,12 @@ final class History {
                 var content = try Data(contentsOf: source)
                 if let lastLF = content.lastIndex(of: 10) { content = content.prefix(through: lastLF) } else { continue }
                 let hash = sha(content), copy = vault.appendingPathComponent("transcripts/\(id)/\(hash).jsonl")
-                if !exists(copy) { try atomicData(content, copy) }
+                if !exists(copy) {
+                    try atomicData(content, copy)
+                }
             }
         }
+        try compactArchivedTranscripts().checkFailures()
         try atomicJSON(index, vault.appendingPathComponent("index.json"))
         return index.keys.filter { deleted[$0.lowercased()] == nil }.count
     }
