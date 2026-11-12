@@ -240,9 +240,21 @@ final class History {
                 continue
             }
             let eligible = try copies.filter { try continuation.includes(cli, $0.value["cliSessionId"] as! String) }
-            let preferredLineage = eligible.first { sourceKeys.contains($0.owner.key) && SessionLineage.hasMetadata($0.value) }
-            let relation = try preferredLineage.map { try SessionLineage.portable($0.value, session: id) }
-                ?? lineage.resolve(session: id, cli: cli)
+            let completeContinuation = chain.allSatisfy { ts[$0] != nil } && eligible.allSatisfy {
+                $0.value["cliSessionId"] as? String == cli || $0.value["cwd"] as? String == original["cwd"] as? String
+            }
+            let relation: [String: Any]
+            if ledger.entries[id] != nil {
+                // The baseline already distinguishes a deliberate top-level state
+                // from a legacy import. Stale archives cannot arbitrate it again.
+                // Retain portable labels for new copies; resolve/apply below still
+                // decides the shared parentage from the baseline and observed edits.
+                relation = try SessionLineage.portable(original, session: id)
+            } else {
+                let preferredLineage = eligible.first { sourceKeys.contains($0.owner.key) && SessionLineage.hasMetadata($0.value) }
+                relation = try preferredLineage.map { try SessionLineage.portable($0.value, session: id) }
+                    ?? lineage.resolve(session: id, cli: cli)
+            }
             var fallback = original
             for key in SessionLineage.keys { fallback.removeValue(forKey: key) }
             fallback.merge(relation) { _, new in new }
@@ -265,7 +277,7 @@ final class History {
                     let before = try jsonData(existing)
                     let oldRelation = try SessionStateLedger.relationship(existing, session: id)
                     if existingCLI != cli {
-                        guard chain.allSatisfy({ ts[$0] != nil }), existing["cwd"] as? String == original["cwd"] as? String else {
+                        guard completeContinuation, existing["cwd"] as? String == original["cwd"] as? String else {
                             throw SyncError("会话接续正文不完整或项目路径已变化，未更新正文指向。")
                         }
                         existing["cliSessionId"] = cli
@@ -273,7 +285,8 @@ final class History {
                         existing["lastActivityAt"] = max(existing["lastActivityAt"] as? Double ?? 0, original["lastActivityAt"] as? Double ?? 0)
                         if let turns = original["completedTurns"] { existing["completedTurns"] = turns }
                         transaction.continuationRepairs += 1
-                    } else if !chain.isEmpty {
+                    } else if !chain.isEmpty, existing["priorCliSessionIds"] as? [String] != chain {
+                        guard completeContinuation else { throw SyncError("会话接续正文不完整或项目路径已变化，未更新历史链。") }
                         existing["priorCliSessionIds"] = chain
                     }
                     if existing["scheduledTaskId"] == nil, let task = original["scheduledTaskId"] as? String,
@@ -291,6 +304,7 @@ final class History {
                     try ledger.record(id: id, owner: owner.key, value: existing)
                     continue
                 }
+                guard completeContinuation else { throw SyncError("会话接续正文不完整或项目路径已变化，未导入会话。") }
                 var copy = original.filter { allowed.contains($0.key) }
                 copy.merge(relation) { _, new in new }
                 try SessionStateLedger.apply(shared, to: &copy, id: id)
